@@ -61,7 +61,10 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   const askModel = prefs.askModel.trim();
   const { push } = useNavigation();
 
-  const initialPrompt = (props.arguments.text || "").trim();
+  const rawInput = (props.arguments.text || props.fallbackText || "").trim();
+  const initialPrompt = props.arguments.text?.trim()
+    ? props.arguments.text.trim()
+    : rawInput.replace(/^q\s+/i, "").trim();
 
   const [turns, setTurns] = useState<ChatTurn[]>(() =>
     initialPrompt

@@ -101,8 +101,13 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
   const translateModel = prefs.translateModel.trim();
   const { push } = useNavigation();
 
-  const [sourceText, setSourceText] = useState<string>((props.arguments.text || "").trim());
-  const [initializingInput, setInitializingInput] = useState<boolean>(!props.arguments.text?.trim());
+  const rawInitial = (props.arguments.text || props.fallbackText || "").trim();
+  const resolvedInitial = props.arguments.text?.trim()
+    ? props.arguments.text.trim()
+    : rawInitial.replace(/^t\s+/i, "").trim();
+
+  const [sourceText, setSourceText] = useState<string>(resolvedInitial);
+  const [initializingInput, setInitializingInput] = useState<boolean>(!resolvedInitial);
   const [targetLang, setTargetLang] = useState<TargetLanguage>(prefs.targetLang || "auto_zh_en");
 
   const [translated, setTranslated] = useState<string>("");
@@ -115,7 +120,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
 
   // Fallback to selected text or clipboard text when invoked without `${text}` argument
   useEffect(() => {
-    if (props.arguments.text?.trim()) {
+    if (resolvedInitial) {
       setInitializingInput(false);
       return;
     }
@@ -150,7 +155,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
     return () => {
       cancelled = true;
     };
-  }, [props.arguments.text]);
+  }, [resolvedInitial]);
 
   const runTranslation = useCallback(async () => {
     if (!sourceText.trim()) return;
