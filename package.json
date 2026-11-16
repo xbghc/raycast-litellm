@@ -1,0 +1,181 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "raycast-litellm",
+  "title": "Lite Ollama",
+  "description": "轻量级剪贴板图片 OCR、快捷翻译与本地大模型问答，接入本地 Ollama 或 OpenAI 兼容端点，支持一键进入 Ollama 桌面端继续对话",
+  "icon": "extension-icon.png",
+  "author": "xbghc",
+  "license": "MIT",
+  "platforms": [
+    "macOS",
+    "Windows"
+  ],
+  "categories": [
+    "Productivity",
+    "Developer Tools"
+  ],
+  "preferences": [
+    {
+      "name": "endpoint",
+      "type": "textfield",
+      "required": true,
+      "title": "Endpoint",
+      "description": "本地 Ollama 地址（如 http://localhost:11434）或 OpenAI 兼容接口地址（如 http://localhost:4000/v1）",
+      "default": "http://localhost:11434",
+      "placeholder": "http://localhost:11434"
+    },
+    {
+      "name": "model",
+      "type": "textfield",
+      "required": true,
+      "title": "Model",
+      "description": "用于翻译和问答的模型名称（如 qwen2.5:7b、llama3.2、qwen3:8b）",
+      "default": "qwen2.5:7b",
+      "placeholder": "qwen2.5:7b"
+    },
+    {
+      "name": "apiKey",
+      "type": "password",
+      "required": false,
+      "title": "API Key (可选)",
+      "description": "本地 Ollama 无需填写；接入 LiteLLM 或远程兼容网关时可按需配置",
+      "placeholder": "sk-..."
+    },
+    {
+      "name": "ocrEngine",
+      "type": "dropdown",
+      "required": true,
+      "title": "默认 OCR 识别引擎",
+      "description": "支持系统原生离线极速识别与视觉大模型识别，也可在 OCR 面板右上角随时切换",
+      "default": "system",
+      "data": [
+        {
+          "title": "系统原生离线 OCR (Windows Media OCR / macOS Vision)",
+          "value": "system"
+        },
+        {
+          "title": "本地视觉大模型 OCR (调用 Vision Model)",
+          "value": "llm"
+        }
+      ]
+    },
+    {
+      "name": "ocrModel",
+      "type": "textfield",
+      "required": false,
+      "title": "OCR 视觉模型 (可选)",
+      "description": "使用大模型 OCR 时调用的视觉模型（如 qwen2.5vl、minicpm-v、glm-ocr、gemma3）；留空则复用主 Model",
+      "placeholder": "qwen2.5vl:7b"
+    },
+    {
+      "name": "targetLang",
+      "type": "dropdown",
+      "required": false,
+      "title": "默认翻译方向",
+      "description": "翻译命令的默认目标语言方向",
+      "default": "auto_zh_en",
+      "data": [
+        {
+          "title": "智能互译 (中文 ↔ 英文)",
+          "value": "auto_zh_en"
+        },
+        {
+          "title": "简体中文",
+          "value": "zh"
+        },
+        {
+          "title": "English",
+          "value": "en"
+        },
+        {
+          "title": "日本語",
+          "value": "ja"
+        }
+      ]
+    },
+    {
+      "name": "ollamaAppPath",
+      "type": "textfield",
+      "required": false,
+      "title": "Ollama 桌面端路径 (可选)",
+      "description": "自定义 Ollama 桌面客户端可执行文件路径；留空则自动按系统默认路径检测",
+      "placeholder": ""
+    }
+  ],
+  "commands": [
+    {
+      "name": "ocr",
+      "title": "OCR Clipboard Images",
+      "subtitle": "Lite Ollama",
+      "description": "打开类似 Raycast Clipboard 的分栏面板，左侧仅筛选图片剪贴板项，右侧实时显示焦点项 OCR 结果",
+      "mode": "view",
+      "keywords": [
+        "ocr",
+        "clipboard",
+        "image",
+        "剪贴板",
+        "识图",
+        "文字识别"
+      ]
+    },
+    {
+      "name": "translate",
+      "title": "Translate",
+      "subtitle": "Lite Ollama",
+      "description": "快速流式翻译文本（建议为命令设置别名 t，输入 t + 空格 + 文本 触发）",
+      "mode": "view",
+      "keywords": [
+        "t",
+        "translate",
+        "fanyi",
+        "翻译"
+      ],
+      "arguments": [
+        {
+          "name": "text",
+          "type": "text",
+          "placeholder": "输入待翻译文本（留空读取选中文本或剪贴板）",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "ask",
+      "title": "Quick Ask",
+      "subtitle": "Lite Ollama",
+      "description": "快速流式问答，支持一键同步会话并进入 Ollama 桌面端继续对话（建议为命令设置别名 q）",
+      "mode": "view",
+      "keywords": [
+        "q",
+        "ask",
+        "chat",
+        "ollama",
+        "对话",
+        "问答"
+      ],
+      "arguments": [
+        {
+          "name": "text",
+          "type": "text",
+          "placeholder": "输入你的问题...",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "install:local": "node scripts/install-local.mjs",
+    "bundle": "node scripts/bundle.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@raycast/api": "^2.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "typescript": "^5.8.2"
+  }
+}
