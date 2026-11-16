@@ -89,6 +89,12 @@ if (distRes.status !== 0) {
   process.exit(distRes.status ?? 1);
 }
 
+// Wait briefly on Windows so the transient `raycast://cli/...` protocol forwarder process
+// spawned by `ray build` finishes DLL init and exits cleanly before parent job teardown.
+if (process.platform === "win32") {
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+}
+
 if (raycastNotRunning) {
   console.log(
     "\n⚠️ 编译已完成，但检测到当前 Raycast 未运行，尚未完成客户端注册。\n👉 请先启动 Raycast，然后再次执行 `npm run install:local`（或在 Raycast 中运行 Import Extension 选中本目录）。"
