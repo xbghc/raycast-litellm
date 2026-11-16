@@ -12,7 +12,9 @@
   - **右侧**：实时显示当前焦点图片的 **OCR 识别结果** 与原图预览。
 - **双引擎可随时切换**（插件设置默认配置，或面板右上角下拉框 / `Ctrl/⌘ + E` 即时切换）：
   1. **系统原生离线 OCR**：Windows 调用系统内置 `Windows.Media.Ocr`（自动优选支持中英混排的语言包并修复中文字符间距），macOS 调用原生 `Vision` 框架（`VNRecognizeTextRequest` Accurate 模式），毫秒级离线识别。
-  2. **本地视觉大模型 OCR**：调用本地 Ollama 视觉模型（如 `qwen2.5vl`、`minicpm-v`、`glm-ocr`、`gemma3` 等）提取复杂排版、代码或表格。
+  2. **本地视觉大模型 OCR（内置 `PP-DocLayout-S` + `GLM-OCR` 工业级两阶段切片管线）**：
+     - 针对长截图、4K 全屏图、多栏文档与表格，内置 **4.7 MB 轻量版面分析小模型 `PP-DocLayout-S`**（纯 WASM 运行，首次使用自动缓存）+ **像素投影空白波谷切分** + **Recursive XY-Cut 阅读顺序重排**；
+     - 自动将大图精准切分为「标题 / 文本段落 / 表格 / 公式」局部高清子图，并针对 `glm-ocr` 自动匹配官方专用任务指令（`Text Recognition:` / `Table Recognition:` / `Formula Recognition:`，且自动将 HTML 表格转为 Markdown 表格），分块流式拼接展示。
 - **联动操作**：`Enter` 复制识别文本，`Ctrl/⌘ + Enter` 粘贴到当前应用，`Ctrl/⌘ + T` 一键送入翻译，`Ctrl/⌘ + J` 一键送入问答。
 
 ### 2. `Translate` (`t ${text}`)

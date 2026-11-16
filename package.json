@@ -147,14 +147,18 @@
     }
   ],
   "scripts": {
+    "postinstall": "node scripts/copy-ort-wasm.mjs",
+    "prebuild": "node scripts/copy-ort-wasm.mjs",
+    "predev": "node scripts/copy-ort-wasm.mjs",
     "build": "ray build -e dist",
     "dev": "ray develop",
-    "install:local": "node scripts/install-local.mjs",
-    "bundle": "node scripts/bundle.mjs",
+    "install:local": "node scripts/copy-ort-wasm.mjs && node scripts/install-local.mjs",
+    "bundle": "node scripts/copy-ort-wasm.mjs && node scripts/bundle.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@raycast/api": "^2.12.1"
+    "@raycast/api": "^2.12.1",
+    "onnxruntime-web": "^1.31.1"
   },
   "devDependencies": {
     "@types/node": "26.6.5",

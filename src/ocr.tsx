@@ -71,7 +71,7 @@ export default function OcrCommand() {
   }, [modelConfig, pop, prefs.apiKey, prefs.endpoint, push]);
 
   const getCacheKey = useCallback(
-    (targetEngine: OcrEngineType) => (targetEngine === "system" ? "system" : `llm:${visionModel}`),
+    (targetEngine: OcrEngineType) => (targetEngine === "system" ? "v2:system" : `v2:llm:${visionModel}`),
     [visionModel]
   );
 
@@ -133,6 +133,8 @@ export default function OcrCommand() {
         const recognized = await runImageOcr({
           imagePath: item.cachedPath,
           mimeType: item.mimeType,
+          width: item.width,
+          height: item.height,
           engine: targetEngine,
           endpoint: prefs.endpoint,
           model: visionModel,

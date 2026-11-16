@@ -4,6 +4,10 @@ export interface LlmRequestOptions {
   endpoint: string;
   model: string;
   apiKey?: string;
+  options?: {
+    temperature?: number;
+    num_ctx?: number;
+  };
   messages: Array<{
     role: "system" | "user" | "assistant";
     content: string;
@@ -101,6 +105,7 @@ async function streamOllamaChat(url: string, opts: LlmRequestOptions): Promise<S
   const payload = {
     model: opts.model.trim(),
     stream: true,
+    ...(opts.options ? { options: opts.options } : {}),
     messages: opts.messages.map((m) => ({
       role: m.role,
       content: m.content,
@@ -190,6 +195,7 @@ async function streamOpenAiChat(url: string, opts: LlmRequestOptions): Promise<S
   const payload = {
     model: opts.model.trim(),
     stream: true,
+    ...(opts.options?.temperature !== undefined ? { temperature: opts.options.temperature } : {}),
     messages: opts.messages.map((m) => {
       if (m.images && m.images.length > 0) {
         return {
