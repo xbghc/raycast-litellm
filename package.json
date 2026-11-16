@@ -156,6 +156,9 @@
     "bundle": "node scripts/copy-ort-wasm.mjs && node scripts/bundle.mjs",
     "typecheck": "tsc --noEmit"
   },
+  "engines": {
+    "node": ">=22.22.2"
+  },
   "dependencies": {
     "@raycast/api": "^2.12.1",
     "onnxruntime-web": "^1.31.1"
