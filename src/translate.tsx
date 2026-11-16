@@ -15,7 +15,7 @@ import {
   useNavigation,
 } from "@raycast/api";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchAvailableModels, streamChat } from "./lib/llm";
+import { streamChat } from "./lib/llm";
 import { TargetLanguage, crossShortcut } from "./lib/types";
 
 const LANGUAGE_LABELS: Record<TargetLanguage, string> = {
@@ -98,13 +98,12 @@ function EditSourceForm(props: {
 
 export default function TranslateCommand(props: LaunchProps<{ arguments: Arguments.Translate }>) {
   const prefs = getPreferenceValues<Preferences.Translate>();
+  const translateModel = prefs.translateModel.trim();
   const { push } = useNavigation();
 
   const [sourceText, setSourceText] = useState<string>((props.arguments.text || "").trim());
   const [initializingInput, setInitializingInput] = useState<boolean>(!props.arguments.text?.trim());
   const [targetLang, setTargetLang] = useState<TargetLanguage>(prefs.targetLang || "auto_zh_en");
-  const [activeModel, setActiveModel] = useState<string>(prefs.model.trim());
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
 
   const [translated, setTranslated] = useState<string>("");
   const [thinking, setThinking] = useState<string>("");
@@ -113,11 +112,6 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
   const [runNonce, setRunNonce] = useState<number>(0);
 
   const abortRef = useRef<AbortController | null>(null);
-
-  // Discover local models in background for convenient model switching
-  useEffect(() => {
-    void fetchAvailableModels(prefs.endpoint, prefs.apiKey).then(setAvailableModels);
-  }, [prefs.endpoint, prefs.apiKey]);
 
   // Fallback to selected text or clipboard text when invoked without `${text}` argument
   useEffect(() => {
@@ -173,7 +167,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
     try {
       const final = await streamChat({
         endpoint: prefs.endpoint,
-        model: activeModel,
+        model: translateModel,
         apiKey: prefs.apiKey,
         signal: controller.signal,
         messages: [
@@ -200,7 +194,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
         setIsLoading(false);
       }
     }
-  }, [activeModel, prefs.apiKey, prefs.endpoint, sourceText, targetLang]);
+  }, [prefs.apiKey, prefs.endpoint, sourceText, targetLang, translateModel]);
 
   useEffect(() => {
     if (initializingInput || !sourceText.trim()) return;
@@ -208,7 +202,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
     return () => {
       abortRef.current?.abort();
     };
-  }, [initializingInput, sourceText, targetLang, activeModel, runNonce, runTranslation]);
+  }, [initializingInput, sourceText, targetLang, translateModel, runNonce, runTranslation]);
 
   if (!initializingInput && !sourceText.trim()) {
     return (
@@ -238,11 +232,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
           placeholder="在此输入要翻译的内容（提示：为命令设置别名 t 后，可在 Raycast 直接输入 t 空格 文本）"
           autoFocus
         />
-        <Form.Dropdown
-          id="lang"
-          title="翻译方向"
-          defaultValue={targetLang}
-        >
+        <Form.Dropdown id="lang" title="翻译方向" defaultValue={targetLang}>
           {(Object.keys(LANGUAGE_LABELS) as TargetLanguage[]).map((key) => (
             <Form.Dropdown.Item key={key} value={key} title={LANGUAGE_LABELS[key]} />
           ))}
@@ -263,7 +253,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
           ? "*正在生成译文...*"
           : "*暂无译文*";
 
-    markdown = `${mainOutput}\n\n---\n\n**原文** · \`${LANGUAGE_LABELS[targetLang]}\` · \`${activeModel}\`\n\n> ${sourceText.replace(/\n/g, "\n> ")}`;
+    markdown = `${mainOutput}\n\n---\n\n**原文** · \`${LANGUAGE_LABELS[targetLang]}\` · \`${translateModel}\`\n\n> ${sourceText.replace(/\n/g, "\n> ")}`;
   }
 
   return (
@@ -341,22 +331,6 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
                 />
               ))}
             </ActionPanel.Submenu>
-            {availableModels.length > 0 && (
-              <ActionPanel.Submenu
-                title={`切换模型 (当前: ${activeModel})`}
-                icon={Icon.Stars}
-                shortcut={crossShortcut("m")}
-              >
-                {availableModels.map((m) => (
-                  <Action
-                    key={m}
-                    title={m}
-                    icon={m === activeModel ? Icon.CheckCircle : Icon.Circle}
-                    onAction={() => setActiveModel(m)}
-                  />
-                ))}
-              </ActionPanel.Submenu>
-            )}
             <Action
               title="重新翻译"
               icon={Icon.RotateClockwise}

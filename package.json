@@ -25,28 +25,38 @@
       "placeholder": "http://localhost:11434"
     },
     {
-      "name": "model",
+      "name": "ocrModel",
+      "type": "textfield",
+      "required": false,
+      "title": "OCR 模型 (OCR Model)",
+      "description": "专用于视觉大模型 OCR 的模型名称（如 qwen2.5vl:7b、minicpm-v、glm-ocr）；若仅使用系统原生离线 OCR 可留空",
+      "default": "qwen2.5vl:7b",
+      "placeholder": "qwen2.5vl:7b"
+    },
+    {
+      "name": "translateModel",
       "type": "textfield",
       "required": true,
-      "title": "Model",
-      "description": "用于翻译和问答的模型名称（如 qwen2.5:7b、llama3.2、qwen3:8b）",
+      "title": "翻译模型 (Translate Model)",
+      "description": "专用于翻译命令 (t) 的模型名称（如 qwen2.5:3b、qwen2.5:7b、gemma3:4b）",
       "default": "qwen2.5:7b",
       "placeholder": "qwen2.5:7b"
     },
     {
-      "name": "apiKey",
-      "type": "password",
-      "required": false,
-      "title": "API Key (可选)",
-      "description": "本地 Ollama 无需填写；接入 LiteLLM 或远程兼容网关时可按需配置",
-      "placeholder": "sk-..."
+      "name": "askModel",
+      "type": "textfield",
+      "required": true,
+      "title": "问答模型 (Ask Model)",
+      "description": "专用于对话问答命令 (q) 的模型名称（如 qwen3:8b、deepseek-r1:8b、llama3.2）",
+      "default": "qwen2.5:7b",
+      "placeholder": "qwen3:8b"
     },
     {
       "name": "ocrEngine",
       "type": "dropdown",
       "required": true,
       "title": "默认 OCR 识别引擎",
-      "description": "支持系统原生离线极速识别与视觉大模型识别，也可在 OCR 面板右上角随时切换",
+      "description": "支持系统原生离线极速识别与本地视觉大模型识别",
       "default": "system",
       "data": [
         {
@@ -54,18 +64,10 @@
           "value": "system"
         },
         {
-          "title": "本地视觉大模型 OCR (调用 Vision Model)",
+          "title": "本地视觉大模型 OCR (使用上方配置的 OCR 模型)",
           "value": "llm"
         }
       ]
-    },
-    {
-      "name": "ocrModel",
-      "type": "textfield",
-      "required": false,
-      "title": "OCR 视觉模型 (可选)",
-      "description": "使用大模型 OCR 时调用的视觉模型（如 qwen2.5vl、minicpm-v、glm-ocr、gemma3）；留空则复用主 Model",
-      "placeholder": "qwen2.5vl:7b"
     },
     {
       "name": "targetLang",
@@ -92,6 +94,14 @@
           "value": "ja"
         }
       ]
+    },
+    {
+      "name": "apiKey",
+      "type": "password",
+      "required": false,
+      "title": "API Key (可选)",
+      "description": "本地 Ollama 无需填写；接入 LiteLLM 或远程兼容网关时可按需配置",
+      "placeholder": "sk-..."
     },
     {
       "name": "ollamaAppPath",

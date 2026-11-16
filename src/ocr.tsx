@@ -29,7 +29,7 @@ import { ClipboardImageItem, OcrEngineType, crossShortcut } from "./lib/types";
 
 export default function OcrCommand() {
   const prefs = getPreferenceValues<Preferences.Ocr>();
-  const visionModel = (prefs.ocrModel?.trim() || prefs.model.trim());
+  const visionModel = (prefs.ocrModel || "").trim();
 
   const [items, setItems] = useState<ClipboardImageItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
@@ -355,7 +355,7 @@ export default function OcrCommand() {
               <Action
                 title={
                   engine === "system"
-                    ? `切换为视觉大模型 OCR (${visionModel})`
+                    ? `切换为视觉大模型 OCR${visionModel ? ` (${visionModel})` : ""}`
                     : "切换为系统原生离线 OCR"
                 }
                 icon={Icon.Switch}
@@ -428,7 +428,7 @@ export default function OcrCommand() {
             icon={Icon.ComputerChip}
           />
           <List.Dropdown.Item
-            title={`视觉大模型 (${visionModel})`}
+            title={visionModel ? `视觉大模型 (${visionModel})` : "视觉大模型 (未配置模型)"}
             value="llm"
             icon={Icon.Stars}
           />

@@ -17,19 +17,15 @@ interface ResolvedEndpoint {
   mode: "ollama" | "openai";
   chatUrl: string;
   fallbackOpenAiUrl?: string;
-  modelsUrl: string;
-  fallbackModelsUrl?: string;
 }
 
 export function resolveEndpoint(rawEndpoint: string): ResolvedEndpoint {
   const cleaned = (rawEndpoint || "http://localhost:11434").trim().replace(/\/+$/, "");
 
   if (cleaned.endsWith("/chat/completions")) {
-    const base = cleaned.slice(0, -"/chat/completions".length);
     return {
       mode: "openai",
       chatUrl: cleaned,
-      modelsUrl: `${base}/models`,
     };
   }
 
@@ -38,7 +34,6 @@ export function resolveEndpoint(rawEndpoint: string): ResolvedEndpoint {
     return {
       mode: "openai",
       chatUrl: `${v1Base}/chat/completions`,
-      modelsUrl: `${v1Base}/models`,
     };
   }
 
@@ -48,8 +43,6 @@ export function resolveEndpoint(rawEndpoint: string): ResolvedEndpoint {
       mode: "ollama",
       chatUrl: cleaned,
       fallbackOpenAiUrl: `${root}/v1/chat/completions`,
-      modelsUrl: `${root}/api/tags`,
-      fallbackModelsUrl: `${root}/v1/models`,
     };
   }
 
@@ -59,8 +52,6 @@ export function resolveEndpoint(rawEndpoint: string): ResolvedEndpoint {
       mode: "ollama",
       chatUrl: `${cleaned}/chat`,
       fallbackOpenAiUrl: `${root}/v1/chat/completions`,
-      modelsUrl: `${cleaned}/tags`,
-      fallbackModelsUrl: `${root}/v1/models`,
     };
   }
 
@@ -68,8 +59,6 @@ export function resolveEndpoint(rawEndpoint: string): ResolvedEndpoint {
     mode: "ollama",
     chatUrl: `${cleaned}/api/chat`,
     fallbackOpenAiUrl: `${cleaned}/v1/chat/completions`,
-    modelsUrl: `${cleaned}/api/tags`,
-    fallbackModelsUrl: `${cleaned}/v1/models`,
   };
 }
 
@@ -127,7 +116,6 @@ async function streamOllamaChat(url: string, opts: LlmRequestOptions): Promise<S
   });
 
   if ((res.status === 404 || res.status === 405) && opts.endpoint) {
-    // Could be an OpenAI-compatible server without /v1 suffix (unless Ollama itself returned model-not-found JSON)
     const errText = await res.text().catch(() => "");
     if (!errText.toLowerCase().includes("model") && !errText.toLowerCase().includes("ollama")) {
       return "FALLBACK_OPENAI";
@@ -304,6 +292,10 @@ function parseApiError(status: number, bodyText: string, model: string): string 
 }
 
 export async function streamChat(opts: LlmRequestOptions): Promise<StreamProgress> {
+  if (!opts.model || !opts.model.trim()) {
+    throw new Error("未配置对应命令的模型名称，请在插件偏好设置中填写");
+  }
+
   const resolved = resolveEndpoint(opts.endpoint);
 
   try {
@@ -327,49 +319,6 @@ export async function streamChat(opts: LlmRequestOptions): Promise<StreamProgres
     }
     throw err;
   }
-}
-
-export async function fetchAvailableModels(endpoint: string, apiKey?: string): Promise<string[]> {
-  const resolved = resolveEndpoint(endpoint);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3000);
-
-  try {
-    const res = await fetch(resolved.modelsUrl, {
-      headers: buildHeaders(apiKey),
-      signal: controller.signal,
-    });
-    if (res.ok) {
-      const data = (await res.json()) as {
-        models?: Array<{ name?: string }>;
-        data?: Array<{ id?: string }>;
-      };
-      if (Array.isArray(data.models)) {
-        return data.models.map((m) => m.name || "").filter(Boolean);
-      }
-      if (Array.isArray(data.data)) {
-        return data.data.map((m) => m.id || "").filter(Boolean);
-      }
-    }
-
-    if (resolved.fallbackModelsUrl) {
-      const fbRes = await fetch(resolved.fallbackModelsUrl, {
-        headers: buildHeaders(apiKey),
-        signal: controller.signal,
-      });
-      if (fbRes.ok) {
-        const fbData = (await fbRes.json()) as { data?: Array<{ id?: string }> };
-        if (Array.isArray(fbData.data)) {
-          return fbData.data.map((m) => m.id || "").filter(Boolean);
-        }
-      }
-    }
-  } catch {
-    // Non-fatal: model listing is optional convenience
-  } finally {
-    clearTimeout(timer);
-  }
-  return [];
 }
 
 export function turnsToMessages(turns: ChatTurn[]) {

@@ -16,7 +16,7 @@ import {
 } from "@raycast/api";
 import { randomUUID } from "node:crypto";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchAvailableModels, streamChat, turnsToMessages } from "./lib/llm";
+import { streamChat, turnsToMessages } from "./lib/llm";
 import { saveAndOpenInOllama } from "./lib/ollama-app";
 import { ChatTurn, crossShortcut } from "./lib/types";
 
@@ -58,6 +58,7 @@ function FollowUpForm(props: { onSend: (question: string) => void }) {
 
 export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask }>) {
   const prefs = getPreferenceValues<Preferences.Ask>();
+  const askModel = prefs.askModel.trim();
   const { push } = useNavigation();
 
   const initialPrompt = (props.arguments.text || "").trim();
@@ -74,8 +75,6 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
         ]
       : []
   );
-  const [activeModel, setActiveModel] = useState<string>(prefs.model.trim());
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [streamingContent, setStreamingContent] = useState<string>("");
   const [streamingThinking, setStreamingThinking] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -87,12 +86,8 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   const turnsRef = useRef<ChatTurn[]>(turns);
   turnsRef.current = turns;
 
-  useEffect(() => {
-    void fetchAvailableModels(prefs.endpoint, prefs.apiKey).then(setAvailableModels);
-  }, [prefs.endpoint, prefs.apiKey]);
-
   const sendConversationToModel = useCallback(
-    async (conversationTurns: ChatTurn[], modelName: string) => {
+    async (conversationTurns: ChatTurn[]) => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -105,7 +100,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       try {
         const final = await streamChat({
           endpoint: prefs.endpoint,
-          model: modelName,
+          model: askModel,
           apiKey: prefs.apiKey,
           signal: controller.signal,
           messages: [
@@ -145,7 +140,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
         }
       }
     },
-    [prefs.apiKey, prefs.endpoint]
+    [askModel, prefs.apiKey, prefs.endpoint]
   );
 
   // Trigger initial completion on mount when launched with `q ${text}`
@@ -153,12 +148,12 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   useEffect(() => {
     if (!initialTriggeredRef.current && turns.length === 1 && turns[0].role === "user") {
       initialTriggeredRef.current = true;
-      void sendConversationToModel(turns, activeModel);
+      void sendConversationToModel(turns);
     }
     return () => {
       abortRef.current?.abort();
     };
-  }, [activeModel, sendConversationToModel, turns]);
+  }, [sendConversationToModel, turns]);
 
   const handleAppendUserQuestion = useCallback(
     (question: string) => {
@@ -170,9 +165,9 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       };
       const updated = [...turnsRef.current, newUserTurn];
       setTurns(updated);
-      void sendConversationToModel(updated, activeModel);
+      void sendConversationToModel(updated);
     },
-    [activeModel, sendConversationToModel]
+    [sendConversationToModel]
   );
 
   const handleRegenerateLast = useCallback(() => {
@@ -182,11 +177,10 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       current.pop();
     }
     setTurns(current);
-    void sendConversationToModel(current, activeModel);
-  }, [activeModel, sendConversationToModel]);
+    void sendConversationToModel(current);
+  }, [sendConversationToModel]);
 
   const handleContinueInOllama = useCallback(async () => {
-    // Stop any active stream cleanly and include partial assistant output if already generated
     if (isLoading) {
       abortRef.current?.abort();
       setIsLoading(false);
@@ -211,7 +205,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
     try {
       const result = await saveAndOpenInOllama({
         turns: exportTurns,
-        model: activeModel,
+        model: askModel,
         existingChatId: syncedChatId,
         customAppPath: prefs.ollamaAppPath,
       });
@@ -221,14 +215,14 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       await showHUD(
         result.launchedTarget === "desktop-app"
           ? "已写入会话并打开 Ollama 桌面端继续对话"
-          : `未检测到桌面端，已在终端启动 ollama run ${activeModel}`
+          : `未检测到桌面端，已在终端启动 ollama run ${askModel}`
       );
     } catch (err) {
       toast.style = Toast.Style.Failure;
       toast.title = "跳转 Ollama 失败";
       toast.message = err instanceof Error ? err.message : String(err);
     }
-  }, [activeModel, isLoading, prefs.ollamaAppPath, streamingContent, streamingThinking, syncedChatId]);
+  }, [askModel, isLoading, prefs.ollamaAppPath, streamingContent, streamingThinking, syncedChatId]);
 
   const latestAnswer = useMemo(() => {
     if (streamingContent.trim()) return streamingContent.trim();
@@ -247,21 +241,17 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   if (turns.length === 0) {
     return (
       <Form
-        navigationTitle={`Quick Ask · ${activeModel}`}
+        navigationTitle={`Quick Ask · ${askModel}`}
         actions={
           <ActionPanel>
             <Action.SubmitForm
               title="发送提问"
               icon={Icon.Message}
-              onSubmit={(values: { prompt: string; model?: string }) => {
+              onSubmit={(values: { prompt: string }) => {
                 const q = (values.prompt || "").trim();
                 if (!q) {
                   void showToast({ style: Toast.Style.Failure, title: "请输入你的问题" });
                   return;
-                }
-                const chosenModel = values.model?.trim() || activeModel;
-                if (chosenModel !== activeModel) {
-                  setActiveModel(chosenModel);
                 }
                 const firstTurn: ChatTurn = {
                   id: randomUUID(),
@@ -271,7 +261,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
                 };
                 initialTriggeredRef.current = true;
                 setTurns([firstTurn]);
-                void sendConversationToModel([firstTurn], chosenModel);
+                void sendConversationToModel([firstTurn]);
               }}
             />
             <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
@@ -284,16 +274,6 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
           placeholder="输入你想问的问题（提示：为命令设置别名 q 后，可在 Raycast 直接输入 q 空格 问题）"
           autoFocus
         />
-        {availableModels.length > 0 && (
-          <Form.Dropdown id="model" title="模型" defaultValue={activeModel}>
-            {!availableModels.includes(activeModel) && (
-              <Form.Dropdown.Item value={activeModel} title={`${activeModel} (默认)`} />
-            )}
-            {availableModels.map((m) => (
-              <Form.Dropdown.Item key={m} value={m} title={m} />
-            ))}
-          </Form.Dropdown>
-        )}
       </Form>
     );
   }
@@ -316,7 +296,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       if (isSingleTurn) {
         renderedBlocks.push(`${thoughtBlock}${turn.content}`);
       } else {
-        renderedBlocks.push(`### 🤖 ${activeModel}\n\n${thoughtBlock}${turn.content}`);
+        renderedBlocks.push(`### 🤖 ${askModel}\n\n${thoughtBlock}${turn.content}`);
       }
     }
   }
@@ -330,20 +310,20 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       liveSection += `> 💭 *思考中：${previewThought.replace(/\n/g, " ")}*\n\n`;
     }
     liveSection += streamingContent || "*正在生成回答...*";
-    renderedBlocks.push(isSingleTurn ? liveSection : `### 🤖 ${activeModel}\n\n${liveSection}`);
+    renderedBlocks.push(isSingleTurn ? liveSection : `### 🤖 ${askModel}\n\n${liveSection}`);
   }
 
   if (error) {
     renderedBlocks.push(`> ⚠️ **请求出错**\n>\n> ${error.replace(/\n/g, "\n> ")}`);
   }
 
-  const footer = `\n\n---\n*模型: \`${activeModel}\` · 按 \`Enter\` 进入 Ollama 桌面端继续对话 · 按 \`Ctrl/⌘ + N\` 在当前面板快速追问*`;
+  const footer = `\n\n---\n*模型: \`${askModel}\` · 按 \`Enter\` 进入 Ollama 桌面端继续对话 · 按 \`Ctrl/⌘ + N\` 在当前面板快速追问*`;
   const markdown = renderedBlocks.join("\n\n---\n\n") + footer;
 
   return (
     <Detail
       isLoading={isLoading}
-      navigationTitle={`Quick Ask · ${activeModel}`}
+      navigationTitle={`Quick Ask · ${askModel}`}
       markdown={markdown}
       actions={
         <ActionPanel>
@@ -383,7 +363,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
             />
           </ActionPanel.Section>
 
-          <ActionPanel.Section title="模型与显示控制">
+          <ActionPanel.Section title="显示与回答控制">
             {hasAnyThinking && (
               <Action
                 title={showThinking ? "折叠思考过程 (Thinking)" : "展开思考过程 (Thinking)"}
@@ -391,32 +371,6 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
                 shortcut={crossShortcut("t")}
                 onAction={() => setShowThinking((v) => !v)}
               />
-            )}
-            {availableModels.length > 0 && (
-              <ActionPanel.Submenu
-                title={`切换本地模型 (当前: ${activeModel})`}
-                icon={Icon.Stars}
-                shortcut={crossShortcut("m")}
-              >
-                {availableModels.map((m) => (
-                  <Action
-                    key={m}
-                    title={m}
-                    icon={m === activeModel ? Icon.CheckCircle : Icon.Circle}
-                    onAction={() => {
-                      setActiveModel(m);
-                      const cur = [...turnsRef.current];
-                      if (cur.length > 0) {
-                        if (cur[cur.length - 1].role === "assistant") {
-                          cur.pop();
-                        }
-                        setTurns(cur);
-                        void sendConversationToModel(cur, m);
-                      }
-                    }}
-                  />
-                ))}
-              </ActionPanel.Submenu>
             )}
             <Action
               title="重新生成回答"
