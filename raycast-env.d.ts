@@ -8,14 +8,8 @@
 /* eslint-disable @typescript-eslint/ban-types */
 
 type ExtensionPreferences = {
-  /** Endpoint - 本地 Ollama 地址（如 http://localhost:11434）或 OpenAI 兼容接口地址（如 http://localhost:4000/v1） */
+  /** Endpoint - 本地 Ollama 地址（如 http://localhost:11434）；OCR / 翻译 / 问答三个独立模型会自动从该地址获取已安装列表供下拉选择 */
   "endpoint": string,
-  /** OCR 模型 (OCR Model) - 专用于视觉大模型 OCR 的模型名称（如 qwen2.5vl:7b、minicpm-v、glm-ocr）；若仅使用系统原生离线 OCR 可留空 */
-  "ocrModel": string,
-  /** 翻译模型 (Translate Model) - 专用于翻译命令 (t) 的模型名称（如 qwen2.5:3b、qwen2.5:7b、gemma3:4b） */
-  "translateModel": string,
-  /** 问答模型 (Ask Model) - 专用于对话问答命令 (q) 的模型名称（如 qwen3:8b、deepseek-r1:8b、llama3.2） */
-  "askModel": string,
   /** 默认 OCR 识别引擎 - 支持系统原生离线极速识别与本地视觉大模型识别 */
   "ocrEngine": "system" | "llm",
   /** 默认翻译方向 - 翻译命令的默认目标语言方向 */

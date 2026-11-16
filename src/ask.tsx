@@ -16,7 +16,9 @@ import {
 } from "@raycast/api";
 import { randomUUID } from "node:crypto";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ModelConfigForm } from "./components/ModelConfigForm";
 import { streamChat, turnsToMessages } from "./lib/llm";
+import { SavedModelConfig, loadModelConfig } from "./lib/model-store";
 import { saveAndOpenInOllama } from "./lib/ollama-app";
 import { ChatTurn, crossShortcut } from "./lib/types";
 
@@ -58,14 +60,14 @@ function FollowUpForm(props: { onSend: (question: string) => void }) {
 
 export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask }>) {
   const prefs = getPreferenceValues<Preferences.Ask>();
-  const askModel = prefs.askModel.trim();
-  const { push } = useNavigation();
+  const { push, pop } = useNavigation();
 
   const rawInput = (props.arguments.text || props.fallbackText || "").trim();
   const initialPrompt = props.arguments.text?.trim()
     ? props.arguments.text.trim()
     : rawInput.replace(/^q\s+/i, "").trim();
 
+  const [modelConfig, setModelConfig] = useState<SavedModelConfig | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>(() =>
     initialPrompt
       ? [
@@ -85,12 +87,20 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   const [showThinking, setShowThinking] = useState<boolean>(false);
   const [syncedChatId, setSyncedChatId] = useState<string | undefined>(undefined);
 
+  const askModel = modelConfig?.askModel || "";
+
   const abortRef = useRef<AbortController | null>(null);
   const turnsRef = useRef<ChatTurn[]>(turns);
   turnsRef.current = turns;
 
+  useEffect(() => {
+    void loadModelConfig().then(setModelConfig);
+  }, []);
+
   const sendConversationToModel = useCallback(
-    async (conversationTurns: ChatTurn[]) => {
+    async (conversationTurns: ChatTurn[], targetModel: string) => {
+      if (!targetModel) return;
+
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -103,7 +113,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       try {
         const final = await streamChat({
           endpoint: prefs.endpoint,
-          model: askModel,
+          model: targetModel,
           apiKey: prefs.apiKey,
           signal: controller.signal,
           messages: [
@@ -143,20 +153,41 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
         }
       }
     },
-    [askModel, prefs.apiKey, prefs.endpoint]
+    [prefs.apiKey, prefs.endpoint]
   );
 
-  // Trigger initial completion on mount when launched with `q ${text}`
+  // Trigger initial completion once askModel is available
   const initialTriggeredRef = useRef(false);
   useEffect(() => {
-    if (!initialTriggeredRef.current && turns.length === 1 && turns[0].role === "user") {
+    if (
+      !initialTriggeredRef.current &&
+      askModel &&
+      turns.length === 1 &&
+      turns[0].role === "user"
+    ) {
       initialTriggeredRef.current = true;
-      void sendConversationToModel(turns);
+      void sendConversationToModel(turns, askModel);
     }
     return () => {
       abortRef.current?.abort();
     };
-  }, [sendConversationToModel, turns]);
+  }, [askModel, sendConversationToModel, turns]);
+
+  const openModelSettings = useCallback(() => {
+    if (!modelConfig) return;
+    push(
+      <ModelConfigForm
+        endpoint={prefs.endpoint}
+        apiKey={prefs.apiKey}
+        initialConfig={modelConfig}
+        highlightField="ask"
+        onSaved={(updated) => {
+          setModelConfig(updated);
+          pop();
+        }}
+      />
+    );
+  }, [modelConfig, pop, prefs.apiKey, prefs.endpoint, push]);
 
   const handleAppendUserQuestion = useCallback(
     (question: string) => {
@@ -168,9 +199,9 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       };
       const updated = [...turnsRef.current, newUserTurn];
       setTurns(updated);
-      void sendConversationToModel(updated);
+      void sendConversationToModel(updated, askModel);
     },
-    [sendConversationToModel]
+    [askModel, sendConversationToModel]
   );
 
   const handleRegenerateLast = useCallback(() => {
@@ -180,8 +211,8 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       current.pop();
     }
     setTurns(current);
-    void sendConversationToModel(current);
-  }, [sendConversationToModel]);
+    void sendConversationToModel(current, askModel);
+  }, [askModel, sendConversationToModel]);
 
   const handleContinueInOllama = useCallback(async () => {
     if (isLoading) {
@@ -240,8 +271,21 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
     [streamingThinking, turns]
   );
 
+  // First-run automatic local model picker (preserves `turns` so saving immediately answers `q ${text}`)
+  if (modelConfig && !askModel) {
+    return (
+      <ModelConfigForm
+        endpoint={prefs.endpoint}
+        apiKey={prefs.apiKey}
+        initialConfig={modelConfig}
+        highlightField="ask"
+        onSaved={setModelConfig}
+      />
+    );
+  }
+
   // Interactive entry form when opened without `${text}` argument
-  if (turns.length === 0) {
+  if (modelConfig && turns.length === 0) {
     return (
       <Form
         navigationTitle={`Quick Ask · ${askModel}`}
@@ -264,8 +308,14 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
                 };
                 initialTriggeredRef.current = true;
                 setTurns([firstTurn]);
-                void sendConversationToModel([firstTurn]);
+                void sendConversationToModel([firstTurn], askModel);
               }}
+            />
+            <Action
+              title="配置本地模型 (OCR / 翻译 / 问答)"
+              icon={Icon.Cog}
+              shortcut={crossShortcut("m", ["shift"])}
+              onAction={openModelSettings}
             />
             <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
           </ActionPanel>
@@ -304,7 +354,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
     }
   }
 
-  if (isLoading) {
+  if (isLoading || !modelConfig) {
     let liveSection = "";
     if (streamingThinking && (!streamingContent || showThinking)) {
       const previewThought = showThinking
@@ -325,7 +375,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
 
   return (
     <Detail
-      isLoading={isLoading}
+      isLoading={isLoading || !modelConfig}
       navigationTitle={`Quick Ask · ${askModel}`}
       markdown={markdown}
       actions={
@@ -366,7 +416,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
             />
           </ActionPanel.Section>
 
-          <ActionPanel.Section title="显示与回答控制">
+          <ActionPanel.Section title="显示与模型配置">
             {hasAnyThinking && (
               <Action
                 title={showThinking ? "折叠思考过程 (Thinking)" : "展开思考过程 (Thinking)"}
@@ -382,10 +432,12 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
               onAction={handleRegenerateLast}
             />
             <Action
-              title="打开插件偏好设置"
-              icon={Icon.Gear}
-              onAction={openExtensionPreferences}
+              title="配置本地模型 (OCR / 翻译 / 问答)"
+              icon={Icon.Cog}
+              shortcut={crossShortcut("m", ["shift"])}
+              onAction={openModelSettings}
             />
+            <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
           </ActionPanel.Section>
         </ActionPanel>
       }

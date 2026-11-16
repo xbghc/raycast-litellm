@@ -14,8 +14,10 @@ import {
   openExtensionPreferences,
   showHUD,
   showToast,
+  useNavigation,
 } from "@raycast/api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ModelConfigForm } from "./components/ModelConfigForm";
 import {
   formatRelativeTime,
   isToday,
@@ -24,13 +26,15 @@ import {
   syncClipboardImages,
   toFileMarkdownUrl,
 } from "./lib/clipboard-images";
+import { SavedModelConfig, loadModelConfig } from "./lib/model-store";
 import { runImageOcr } from "./lib/ocr-engine";
 import { ClipboardImageItem, OcrEngineType, crossShortcut } from "./lib/types";
 
 export default function OcrCommand() {
   const prefs = getPreferenceValues<Preferences.Ocr>();
-  const visionModel = (prefs.ocrModel || "").trim();
+  const { push, pop } = useNavigation();
 
+  const [modelConfig, setModelConfig] = useState<SavedModelConfig | null>(null);
   const [items, setItems] = useState<ClipboardImageItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [engine, setEngine] = useState<OcrEngineType>(prefs.ocrEngine || "system");
@@ -40,9 +44,31 @@ export default function OcrCommand() {
   const [ocrErrors, setOcrErrors] = useState<Record<string, string>>({});
   const [showImagePreview, setShowImagePreview] = useState<boolean>(true);
 
+  const visionModel = modelConfig?.ocrModel || "";
+
   const itemsRef = useRef<ClipboardImageItem[]>([]);
   itemsRef.current = items;
   const activeAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    void loadModelConfig().then(setModelConfig);
+  }, []);
+
+  const openModelSettings = useCallback(() => {
+    if (!modelConfig) return;
+    push(
+      <ModelConfigForm
+        endpoint={prefs.endpoint}
+        apiKey={prefs.apiKey}
+        initialConfig={modelConfig}
+        highlightField="ocr"
+        onSaved={(updated) => {
+          setModelConfig(updated);
+          pop();
+        }}
+      />
+    );
+  }, [modelConfig, pop, prefs.apiKey, prefs.endpoint, push]);
 
   const getCacheKey = useCallback(
     (targetEngine: OcrEngineType) => (targetEngine === "system" ? "system" : `llm:${visionModel}`),
@@ -75,7 +101,7 @@ export default function OcrCommand() {
   }, []);
 
   useEffect(() => {
-    refreshClipboard();
+    void refreshClipboard();
     return () => {
       activeAbortRef.current?.abort();
     };
@@ -83,6 +109,10 @@ export default function OcrCommand() {
 
   const executeOcrForItem = useCallback(
     async (item: ClipboardImageItem, targetEngine: OcrEngineType, force = false) => {
+      if (targetEngine === "llm" && !visionModel) {
+        return;
+      }
+
       const cacheKey = getCacheKey(targetEngine);
       if (!force && item.ocrCache?.[cacheKey] !== undefined) {
         return;
@@ -153,7 +183,9 @@ export default function OcrCommand() {
 
   // Automatically trigger OCR whenever selection or OCR engine changes
   useEffect(() => {
-    if (!selectedId) return;
+    if (!modelConfig || !selectedId) return;
+    if (engine === "llm" && !visionModel) return;
+
     const target = items.find((i) => i.id === selectedId);
     if (!target) return;
 
@@ -168,26 +200,39 @@ export default function OcrCommand() {
     }, delayMs);
 
     return () => clearTimeout(timer);
-  }, [selectedId, engine, items, getCacheKey, executeOcrForItem]);
+  }, [selectedId, engine, items, modelConfig, visionModel, getCacheKey, executeOcrForItem]);
 
-  const togglePin = useCallback(async (item: ClipboardImageItem) => {
+  // If user starts in or switches to LLM OCR without an OCR model configured yet, show ModelConfigForm directly
+  if (modelConfig && engine === "llm" && !visionModel) {
+    return (
+      <ModelConfigForm
+        endpoint={prefs.endpoint}
+        apiKey={prefs.apiKey}
+        initialConfig={modelConfig}
+        highlightField="ocr"
+        onSaved={setModelConfig}
+      />
+    );
+  }
+
+  const togglePin = async (item: ClipboardImageItem) => {
     setItems((prev) => {
       const updated = prev.map((it) => (it.id === item.id ? { ...it, pinned: !it.pinned } : it));
       void saveImageHistory(updated);
       return updated;
     });
-  }, []);
+  };
 
-  const deleteItem = useCallback(async (item: ClipboardImageItem) => {
+  const deleteItem = async (item: ClipboardImageItem) => {
     setItems((prev) => {
       const updated = prev.filter((it) => it.id !== item.id);
       void saveImageHistory(updated);
       return updated;
     });
     await showToast({ style: Toast.Style.Success, title: "已移除该图片记录" });
-  }, []);
+  };
 
-  const clearUnpinned = useCallback(async () => {
+  const clearUnpinned = async () => {
     const confirmed = await confirmAlert({
       title: "清空未置顶的图片记录？",
       message: "置顶的图片及已识别缓存将被保留。",
@@ -199,7 +244,7 @@ export default function OcrCommand() {
       return kept;
     });
     await showToast({ style: Toast.Style.Success, title: "已清空未置顶图片记录" });
-  }, []);
+  };
 
   const sections = useMemo(() => {
     const pinned = items.filter((i) => i.pinned);
@@ -208,43 +253,40 @@ export default function OcrCommand() {
     return { pinned, today, earlier };
   }, [items]);
 
-  const buildDetailMarkdown = useCallback(
-    (item: ClipboardImageItem): string => {
-      const cacheKey = getCacheKey(engine);
-      const cachedText = item.ocrCache?.[cacheKey];
-      const streamingText = livePreviewText[item.id];
-      const errText = ocrErrors[item.id];
-      const isItemLoading = loadingId === item.id;
+  const buildDetailMarkdown = (item: ClipboardImageItem): string => {
+    const cacheKey = getCacheKey(engine);
+    const cachedText = item.ocrCache?.[cacheKey];
+    const streamingText = livePreviewText[item.id];
+    const errText = ocrErrors[item.id];
+    const isItemLoading = loadingId === item.id;
 
-      let bodySection = "";
-      if (errText) {
-        bodySection = `> ⚠️ **OCR 识别失败**\n>\n> ${errText.replace(/\n/g, "\n> ")}\n\n*提示：可按快捷键切换系统原生 OCR / 视觉大模型 OCR，或按重新识别重试。*`;
-      } else if (streamingText !== undefined && isItemLoading) {
-        bodySection = streamingText || "*正在识别图片中的文字...*";
-      } else if (cachedText !== undefined) {
-        bodySection = cachedText.trim() ? cachedText : "*[未在图片中检测到文字]*";
-      } else if (isItemLoading) {
-        bodySection =
-          engine === "system"
-            ? "*正在调用系统原生 OCR 识别...*"
-            : `*正在调用视觉模型 \`${visionModel}\` 识别...*`;
-      } else {
-        bodySection = "*选中图片后自动显示 OCR 结果*";
-      }
+    let bodySection = "";
+    if (errText) {
+      bodySection = `> ⚠️ **OCR 识别失败**\n>\n> ${errText.replace(/\n/g, "\n> ")}\n\n*提示：可按快捷键切换系统原生 OCR / 视觉大模型 OCR，或在动作面板配置本地模型。*`;
+    } else if (streamingText !== undefined && isItemLoading) {
+      bodySection = streamingText || "*正在识别图片中的文字...*";
+    } else if (cachedText !== undefined) {
+      bodySection = cachedText.trim() ? cachedText : "*[未在图片中检测到文字]*";
+    } else if (isItemLoading) {
+      bodySection =
+        engine === "system"
+          ? "*正在调用系统原生 OCR 识别...*"
+          : `*正在调用视觉模型 \`${visionModel}\` 识别...*`;
+    } else {
+      bodySection = "*选中图片后自动显示 OCR 结果*";
+    }
 
-      if (!showImagePreview) {
-        return bodySection;
-      }
+    if (!showImagePreview) {
+      return bodySection;
+    }
 
-      const fileUrl = toFileMarkdownUrl(item.cachedPath);
-      const metaFooter = `\`${item.width > 0 ? `${item.width}×${item.height}` : item.mimeType}\` · \`${
-        engine === "system" ? "系统原生 OCR" : visionModel
-      }\` · ${formatRelativeTime(item.copiedAt)}`;
+    const fileUrl = toFileMarkdownUrl(item.cachedPath);
+    const metaFooter = `\`${item.width > 0 ? `${item.width}×${item.height}` : item.mimeType}\` · \`${
+      engine === "system" ? "系统原生 OCR" : visionModel
+    }\` · ${formatRelativeTime(item.copiedAt)}`;
 
-      return `${bodySection}\n\n---\n\n![Clipboard Image](${fileUrl})\n\n${metaFooter}`;
-    },
-    [engine, getCacheKey, livePreviewText, loadingId, ocrErrors, showImagePreview, visionModel]
-  );
+    return `${bodySection}\n\n---\n\n![Clipboard Image](${fileUrl})\n\n${metaFooter}`;
+  };
 
   const renderItem = (item: ClipboardImageItem) => {
     const cacheKey = getCacheKey(engine);
@@ -267,9 +309,7 @@ export default function OcrCommand() {
         title={item.sourceName ? `${item.title} · ${item.sourceName}` : item.title}
         keywords={keywords}
         accessories={
-          item.pinned
-            ? [{ icon: { source: Icon.Pin, tintColor: Color.Yellow } }]
-            : undefined
+          item.pinned ? [{ icon: { source: Icon.Pin, tintColor: Color.Yellow } }] : undefined
         }
         detail={<List.Item.Detail isLoading={isItemLoading} markdown={buildDetailMarkdown(item)} />}
         actions={
@@ -345,7 +385,7 @@ export default function OcrCommand() {
               />
             </ActionPanel.Section>
 
-            <ActionPanel.Section title="识别与面板控制">
+            <ActionPanel.Section title="识别与模型设置">
               <Action
                 title="重新识别当前图片"
                 icon={Icon.RotateClockwise}
@@ -361,6 +401,12 @@ export default function OcrCommand() {
                 icon={Icon.Switch}
                 shortcut={crossShortcut("e")}
                 onAction={() => setEngine((prev) => (prev === "system" ? "llm" : "system"))}
+              />
+              <Action
+                title="配置本地模型 (OCR / 翻译 / 问答)"
+                icon={Icon.Cog}
+                shortcut={crossShortcut("m", ["shift"])}
+                onAction={openModelSettings}
               />
               <Action
                 title={showImagePreview ? "隐藏右侧原图预览" : "显示右侧原图预览"}
@@ -397,11 +443,7 @@ export default function OcrCommand() {
                 shortcut={Keyboard.Shortcut.Common.RemoveAll}
                 onAction={clearUnpinned}
               />
-              <Action
-                title="打开插件偏好设置"
-                icon={Icon.Gear}
-                onAction={openExtensionPreferences}
-              />
+              <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
             </ActionPanel.Section>
           </ActionPanel>
         }
@@ -412,7 +454,7 @@ export default function OcrCommand() {
   return (
     <List
       isShowingDetail={items.length > 0}
-      isLoading={isSyncing}
+      isLoading={isSyncing || !modelConfig}
       selectedItemId={selectedId}
       onSelectionChange={(id) => setSelectedId(id || undefined)}
       searchBarPlaceholder="Type to filter image clipboard items or OCR text..."
@@ -422,13 +464,9 @@ export default function OcrCommand() {
           value={engine}
           onChange={(val) => setEngine(val as OcrEngineType)}
         >
+          <List.Dropdown.Item title="系统原生离线 OCR" value="system" icon={Icon.ComputerChip} />
           <List.Dropdown.Item
-            title="系统原生离线 OCR"
-            value="system"
-            icon={Icon.ComputerChip}
-          />
-          <List.Dropdown.Item
-            title={visionModel ? `视觉大模型 (${visionModel})` : "视觉大模型 (未配置模型)"}
+            title={visionModel ? `视觉大模型 (${visionModel})` : "视觉大模型 (点击选择本地模型)"}
             value="llm"
             icon={Icon.Stars}
           />
@@ -443,6 +481,7 @@ export default function OcrCommand() {
           actions={
             <ActionPanel>
               <Action title="重新扫描剪贴板" icon={Icon.ArrowClockwise} onAction={refreshClipboard} />
+              <Action title="配置本地模型 (OCR / 翻译 / 问答)" icon={Icon.Cog} onAction={openModelSettings} />
               <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
             </ActionPanel>
           }

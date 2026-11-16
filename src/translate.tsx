@@ -15,7 +15,9 @@ import {
   useNavigation,
 } from "@raycast/api";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ModelConfigForm } from "./components/ModelConfigForm";
 import { streamChat } from "./lib/llm";
+import { SavedModelConfig, loadModelConfig } from "./lib/model-store";
 import { TargetLanguage, crossShortcut } from "./lib/types";
 
 const LANGUAGE_LABELS: Record<TargetLanguage, string> = {
@@ -98,14 +100,14 @@ function EditSourceForm(props: {
 
 export default function TranslateCommand(props: LaunchProps<{ arguments: Arguments.Translate }>) {
   const prefs = getPreferenceValues<Preferences.Translate>();
-  const translateModel = prefs.translateModel.trim();
-  const { push } = useNavigation();
+  const { push, pop } = useNavigation();
 
   const rawInitial = (props.arguments.text || props.fallbackText || "").trim();
   const resolvedInitial = props.arguments.text?.trim()
     ? props.arguments.text.trim()
     : rawInitial.replace(/^t\s+/i, "").trim();
 
+  const [modelConfig, setModelConfig] = useState<SavedModelConfig | null>(null);
   const [sourceText, setSourceText] = useState<string>(resolvedInitial);
   const [initializingInput, setInitializingInput] = useState<boolean>(!resolvedInitial);
   const [targetLang, setTargetLang] = useState<TargetLanguage>(prefs.targetLang || "auto_zh_en");
@@ -116,7 +118,28 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
   const [error, setError] = useState<string | null>(null);
   const [runNonce, setRunNonce] = useState<number>(0);
 
+  const translateModel = modelConfig?.translateModel || "";
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    void loadModelConfig().then(setModelConfig);
+  }, []);
+
+  const openModelSettings = useCallback(() => {
+    if (!modelConfig) return;
+    push(
+      <ModelConfigForm
+        endpoint={prefs.endpoint}
+        apiKey={prefs.apiKey}
+        initialConfig={modelConfig}
+        highlightField="translate"
+        onSaved={(updated) => {
+          setModelConfig(updated);
+          pop();
+        }}
+      />
+    );
+  }, [modelConfig, pop, prefs.apiKey, prefs.endpoint, push]);
 
   // Fallback to selected text or clipboard text when invoked without `${text}` argument
   useEffect(() => {
@@ -158,7 +181,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
   }, [resolvedInitial]);
 
   const runTranslation = useCallback(async () => {
-    if (!sourceText.trim()) return;
+    if (!sourceText.trim() || !translateModel) return;
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -202,17 +225,30 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
   }, [prefs.apiKey, prefs.endpoint, sourceText, targetLang, translateModel]);
 
   useEffect(() => {
-    if (initializingInput || !sourceText.trim()) return;
+    if (initializingInput || !sourceText.trim() || !translateModel) return;
     void runTranslation();
     return () => {
       abortRef.current?.abort();
     };
   }, [initializingInput, sourceText, targetLang, translateModel, runNonce, runTranslation]);
 
-  if (!initializingInput && !sourceText.trim()) {
+  // First-run automatic local model picker
+  if (modelConfig && !translateModel) {
+    return (
+      <ModelConfigForm
+        endpoint={prefs.endpoint}
+        apiKey={prefs.apiKey}
+        initialConfig={modelConfig}
+        highlightField="translate"
+        onSaved={setModelConfig}
+      />
+    );
+  }
+
+  if (modelConfig && !initializingInput && !sourceText.trim()) {
     return (
       <Form
-        navigationTitle="翻译 (Translate)"
+        navigationTitle={`翻译 · ${translateModel}`}
         actions={
           <ActionPanel>
             <Action.SubmitForm
@@ -226,6 +262,12 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
                 setTargetLang((values.lang as TargetLanguage) || targetLang);
                 setSourceText(values.text.trim());
               }}
+            />
+            <Action
+              title="配置本地模型 (OCR / 翻译 / 问答)"
+              icon={Icon.Cog}
+              shortcut={crossShortcut("m", ["shift"])}
+              onAction={openModelSettings}
             />
             <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
           </ActionPanel>
@@ -254,7 +296,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
       ? translated
       : thinking
         ? `> 💭 *模型正在思考翻译细节...*`
-        : isLoading || initializingInput
+        : isLoading || initializingInput || !modelConfig
           ? "*正在生成译文...*"
           : "*暂无译文*";
 
@@ -263,7 +305,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
 
   return (
     <Detail
-      isLoading={isLoading || initializingInput}
+      isLoading={isLoading || initializingInput || !modelConfig}
       navigationTitle={`Translate · ${LANGUAGE_LABELS[targetLang]}`}
       markdown={markdown}
       actions={
@@ -304,7 +346,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
             />
           </ActionPanel.Section>
 
-          <ActionPanel.Section title="翻译控制">
+          <ActionPanel.Section title="翻译与模型配置">
             <Action
               title="编辑原文 / 重新输入"
               icon={Icon.Pencil}
@@ -343,10 +385,12 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
               onAction={() => setRunNonce((n) => n + 1)}
             />
             <Action
-              title="打开插件偏好设置"
-              icon={Icon.Gear}
-              onAction={openExtensionPreferences}
+              title="配置本地模型 (OCR / 翻译 / 问答)"
+              icon={Icon.Cog}
+              shortcut={crossShortcut("m", ["shift"])}
+              onAction={openModelSettings}
             />
+            <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
           </ActionPanel.Section>
         </ActionPanel>
       }
