@@ -88,8 +88,12 @@ Raycast 原生通过 **Command Alias（命令别名）+ 空格** 实现前缀参
   - 在插件根偏好设置中配置全局默认的 **Endpoint**（如本地 Ollama `http://localhost:11434`）与 **API Key**。
   - **OCR**、**Translate**、**Quick Ask** 三个命令各自支持配置可选的 **独立 Endpoint** 与 **独立 API Key**（在命令内按 `Ctrl/⌘ + Shift + E` 或打开动作面板选择 **配置独立 Endpoint / API Key** 即可直达；留空则自动回退使用全局默认 Endpoint）。
   - 例如：保持 OCR 与翻译使用本地 Ollama，而将 `Quick Ask` 的独立 Endpoint 指向本地 `acp2api`（如 `http://127.0.0.1:8787/v1`）或其他 OpenAI 兼容网关。
-- **按生效服务端自动拉取模型列表**：
-  - 首次运行某命令、切换命令独立 Endpoint 后，或按 `Ctrl/⌘ + Shift + M` 打开模型配置面板时，插件会自动请求**当前命令实际生效的 Endpoint**（`/api/tags` 或 `/v1/models`）拉取可用模型供下拉选择（也可按 `Ctrl/⌘ + I` 切换手动输入模型名），并按 Endpoint 独立记忆所选模型。
+- **按生效服务端自动拉取模型列表与独立思考强度配置**：
+  - 首次运行某命令、切换命令独立 Endpoint 后，或按 `Ctrl/⌘ + Shift + M` 打开模型配置面板时，插件会自动请求**当前命令实际生效的 Endpoint**（`/api/tags` 或 `/v1/models`）拉取可用模型供下拉选择（也可按 `Ctrl/⌘ + I` 切换手动输入模型名），并按 Endpoint 独立记忆所选模型与**思考强度（Thinking Effort）**。
+  - **思考强度支持 7 档**：`默认` / `关闭 (none)` / `极低 (minimal)` / `低 (low)` / `中 (medium)` / `高 (high)` / `极高 (xhigh)`，可在模型配置面板预设，也可在任意命令面板内按 **`Ctrl/⌘ + D`** 即时切换：
+    - OpenAI / LiteLLM / `acp2api` 接口自动映射为 `reasoning_effort`；
+    - Ollama 原生接口自动映射为 `think`（布尔值或强度档位）；
+    - 若目标模型不支持思考参数或高阶档位，请求层会自动平滑降级重试，不会报 400 错误。
   - 当 `Quick Ask` 连接至非原生 Ollama 的 `/v1` 接口（如 `acp2api`）时，主回车动作会自动切换为复制回答（`Ctrl/⌘ + N` 继续追问），不再误触本地 Ollama 桌面端写库。
 
 ### 2. Raycast 偏好设置项

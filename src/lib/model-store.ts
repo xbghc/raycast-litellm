@@ -1,4 +1,5 @@
 import { LocalStorage } from "@raycast/api";
+import { ThinkingEffort, isValidThinkingEffort } from "./types";
 
 const MODEL_CONFIG_STORAGE_KEY = "lite-ollama-independent-models-v1";
 
@@ -8,13 +9,19 @@ export interface CommandModelMap {
   ocrModel?: string;
   translateModel?: string;
   askModel?: string;
+  ocrThinking?: ThinkingEffort;
+  translateThinking?: ThinkingEffort;
+  askThinking?: ThinkingEffort;
 }
 
 export interface SavedModelConfig {
   ocrModel: string;
   translateModel: string;
   askModel: string;
-  /** Stores per-endpoint model selections so each command's independent Provider keeps its own model */
+  ocrThinking?: ThinkingEffort;
+  translateThinking?: ThinkingEffort;
+  askThinking?: ThinkingEffort;
+  /** Stores per-endpoint model and thinking effort selections */
   byEndpoint?: Record<string, CommandModelMap>;
 }
 
@@ -31,10 +38,19 @@ export interface ResolvedProviderConfig {
   globalEndpoint: string;
 }
 
-const COMMAND_FIELD_MAP: Record<CommandKind, keyof CommandModelMap> = {
+const COMMAND_MODEL_FIELD_MAP: Record<CommandKind, "ocrModel" | "translateModel" | "askModel"> = {
   ocr: "ocrModel",
   translate: "translateModel",
   ask: "askModel",
+};
+
+const COMMAND_THINKING_FIELD_MAP: Record<
+  CommandKind,
+  "ocrThinking" | "translateThinking" | "askThinking"
+> = {
+  ocr: "ocrThinking",
+  translate: "translateThinking",
+  ask: "askThinking",
 };
 
 export function normalizeEndpointKey(rawEndpoint?: string): string {
@@ -209,6 +225,11 @@ export async function loadModelConfig(): Promise<SavedModelConfig> {
       ocrModel: (parsed.ocrModel || "").trim(),
       translateModel: (parsed.translateModel || "").trim(),
       askModel: (parsed.askModel || "").trim(),
+      ocrThinking: isValidThinkingEffort(parsed.ocrThinking) ? parsed.ocrThinking : undefined,
+      translateThinking: isValidThinkingEffort(parsed.translateThinking)
+        ? parsed.translateThinking
+        : undefined,
+      askThinking: isValidThinkingEffort(parsed.askThinking) ? parsed.askThinking : undefined,
       byEndpoint:
         parsed.byEndpoint && typeof parsed.byEndpoint === "object" ? parsed.byEndpoint : undefined,
     };
@@ -224,6 +245,9 @@ export async function saveModelConfig(config: SavedModelConfig): Promise<void> {
       ocrModel: config.ocrModel.trim(),
       translateModel: config.translateModel.trim(),
       askModel: config.askModel.trim(),
+      ...(config.ocrThinking ? { ocrThinking: config.ocrThinking } : {}),
+      ...(config.translateThinking ? { translateThinking: config.translateThinking } : {}),
+      ...(config.askThinking ? { askThinking: config.askThinking } : {}),
       ...(config.byEndpoint ? { byEndpoint: config.byEndpoint } : {}),
     })
   );
@@ -235,7 +259,7 @@ export function getCommandModel(
   provider: ResolvedProviderConfig
 ): string {
   if (!config) return "";
-  const field = COMMAND_FIELD_MAP[command];
+  const field = COMMAND_MODEL_FIELD_MAP[command];
   const key = normalizeEndpointKey(provider.endpoint);
   const scoped = config.byEndpoint?.[key]?.[field];
   if (scoped !== undefined) {
@@ -255,21 +279,44 @@ export function getCommandModel(
   return "";
 }
 
+export function getCommandThinkingEffort(
+  config: SavedModelConfig | null,
+  command: CommandKind,
+  provider: ResolvedProviderConfig
+): ThinkingEffort {
+  if (!config) return "default";
+  const field = COMMAND_THINKING_FIELD_MAP[command];
+  const key = normalizeEndpointKey(provider.endpoint);
+  const scoped = config.byEndpoint?.[key]?.[field];
+  if (isValidThinkingEffort(scoped)) {
+    return scoped;
+  }
+  if (!provider.isCustomEndpoint && isValidThinkingEffort(config[field])) {
+    return config[field]!;
+  }
+  return "default";
+}
+
 export async function saveCommandModel(
   current: SavedModelConfig,
   command: CommandKind,
   endpoint: string,
-  model: string
+  model: string,
+  thinkingEffort?: ThinkingEffort
 ): Promise<SavedModelConfig> {
-  const field = COMMAND_FIELD_MAP[command];
+  const modelField = COMMAND_MODEL_FIELD_MAP[command];
+  const thinkingField = COMMAND_THINKING_FIELD_MAP[command];
   const key = normalizeEndpointKey(endpoint);
   const cleanModel = model.trim();
+  const existingEntry = current.byEndpoint?.[key] || {};
+  const nextEffort = thinkingEffort ?? existingEntry[thinkingField] ?? current[thinkingField] ?? "default";
 
   const nextByEndpoint: Record<string, CommandModelMap> = {
     ...(current.byEndpoint || {}),
     [key]: {
-      ...(current.byEndpoint?.[key] || {}),
-      [field]: cleanModel,
+      ...existingEntry,
+      [modelField]: cleanModel,
+      [thinkingField]: nextEffort,
     },
   };
 
@@ -277,7 +324,38 @@ export async function saveCommandModel(
     ocrModel: current.ocrModel || "",
     translateModel: current.translateModel || "",
     askModel: current.askModel || "",
-    [field]: cleanModel,
+    ocrThinking: current.ocrThinking,
+    translateThinking: current.translateThinking,
+    askThinking: current.askThinking,
+    [modelField]: cleanModel,
+    [thinkingField]: nextEffort,
+    byEndpoint: nextByEndpoint,
+  };
+
+  await saveModelConfig(nextConfig);
+  return nextConfig;
+}
+
+export async function saveCommandThinkingEffort(
+  current: SavedModelConfig,
+  command: CommandKind,
+  endpoint: string,
+  thinkingEffort: ThinkingEffort
+): Promise<SavedModelConfig> {
+  const thinkingField = COMMAND_THINKING_FIELD_MAP[command];
+  const key = normalizeEndpointKey(endpoint);
+
+  const nextByEndpoint: Record<string, CommandModelMap> = {
+    ...(current.byEndpoint || {}),
+    [key]: {
+      ...(current.byEndpoint?.[key] || {}),
+      [thinkingField]: thinkingEffort,
+    },
+  };
+
+  const nextConfig: SavedModelConfig = {
+    ...current,
+    [thinkingField]: thinkingEffort,
     byEndpoint: nextByEndpoint,
   };
 

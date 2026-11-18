@@ -10,7 +10,7 @@ import {
   sliceImageForOcr,
 } from "./layout-slicer";
 import { streamChat } from "./llm";
-import { OcrEngineType } from "./types";
+import { OcrEngineType, ThinkingEffort } from "./types";
 
 const execFileAsync = promisify(execFile);
 
@@ -410,6 +410,7 @@ export interface RunOcrParams {
   endpoint: string;
   model: string;
   apiKey?: string;
+  thinkingEffort?: ThinkingEffort;
   signal?: AbortSignal;
   onProgress?: (text: string) => void;
 }
@@ -435,6 +436,7 @@ export async function runImageOcr(params: RunOcrParams): Promise<string> {
       endpoint: params.endpoint,
       model: params.model,
       apiKey: params.apiKey,
+      thinkingEffort: params.thinkingEffort,
       options: { temperature: 0.1, num_ctx: 8192 },
       signal: params.signal,
       messages: [
@@ -488,6 +490,7 @@ export async function runImageOcr(params: RunOcrParams): Promise<string> {
         endpoint: params.endpoint,
         model: params.model,
         apiKey: params.apiKey,
+        thinkingEffort: params.thinkingEffort,
         options: { temperature: 0.1, num_ctx: 8192 },
         signal: params.signal,
         messages: [

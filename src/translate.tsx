@@ -22,10 +22,19 @@ import {
   SavedModelConfig,
   formatEndpointHost,
   getCommandModel,
+  getCommandThinkingEffort,
   loadModelConfig,
   resolveCommandProvider,
+  saveCommandThinkingEffort,
 } from "./lib/model-store";
-import { TargetLanguage, crossShortcut } from "./lib/types";
+import {
+  THINKING_EFFORT_OPTIONS,
+  TargetLanguage,
+  ThinkingEffort,
+  crossShortcut,
+  getThinkingEffortShortLabel,
+  isValidThinkingEffort,
+} from "./lib/types";
 
 const LANGUAGE_LABELS: Record<TargetLanguage, string> = {
   auto_zh_en: "智能互译 (中文 ↔ 英文)",
@@ -140,6 +149,10 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
     () => getCommandModel(modelConfig, "translate", provider),
     [modelConfig, provider]
   );
+  const thinkingEffort = useMemo(
+    () => getCommandThinkingEffort(modelConfig, "translate", provider),
+    [modelConfig, provider]
+  );
   const providerHost = useMemo(() => formatEndpointHost(provider.endpoint), [provider.endpoint]);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -162,6 +175,24 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
       />
     );
   }, [modelConfig, pop, push, readFreshProvider]);
+
+  const handleChangeThinkingEffort = useCallback(
+    async (nextEffort: ThinkingEffort) => {
+      if (!modelConfig) return;
+      const updated = await saveCommandThinkingEffort(
+        modelConfig,
+        "translate",
+        provider.endpoint,
+        nextEffort
+      );
+      setModelConfig(updated);
+      await showToast({
+        style: Toast.Style.Success,
+        title: `翻译思考强度已设为: ${getThinkingEffortShortLabel(nextEffort)}`,
+      });
+    },
+    [modelConfig, provider.endpoint]
+  );
 
   // Fallback to selected text or clipboard text when invoked without `${text}` argument
   useEffect(() => {
@@ -219,6 +250,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
         endpoint: provider.endpoint,
         model: translateModel,
         apiKey: provider.apiKey,
+        thinkingEffort,
         signal: controller.signal,
         messages: [
           { role: "system", content: buildTranslationPrompt(targetLang) },
@@ -244,7 +276,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
         setIsLoading(false);
       }
     }
-  }, [provider.apiKey, provider.endpoint, sourceText, targetLang, translateModel]);
+  }, [provider.apiKey, provider.endpoint, sourceText, targetLang, thinkingEffort, translateModel]);
 
   useEffect(() => {
     if (initializingInput || !sourceText.trim() || !translateModel) return;
@@ -252,7 +284,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
     return () => {
       abortRef.current?.abort();
     };
-  }, [initializingInput, sourceText, targetLang, translateModel, runNonce, runTranslation]);
+  }, [initializingInput, sourceText, targetLang, translateModel, thinkingEffort, runNonce, runTranslation]);
 
   // First-run or new-provider model picker
   if (modelConfig && !translateModel) {
@@ -276,17 +308,26 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
             <Action.SubmitForm
               title="开始翻译"
               icon={Icon.Globe}
-              onSubmit={(values: { text: string; lang: string }) => {
+              onSubmit={async (values: { text: string; lang: string; effort?: string }) => {
                 if (!values.text?.trim()) {
                   void showToast({ style: Toast.Style.Failure, title: "请输入待翻译文本" });
                   return;
+                }
+                if (isValidThinkingEffort(values.effort) && values.effort !== thinkingEffort) {
+                  const updatedCfg = await saveCommandThinkingEffort(
+                    modelConfig,
+                    "translate",
+                    provider.endpoint,
+                    values.effort
+                  );
+                  setModelConfig(updatedCfg);
                 }
                 setTargetLang((values.lang as TargetLanguage) || targetLang);
                 setSourceText(values.text.trim());
               }}
             />
             <Action
-              title="切换翻译模型"
+              title="配置翻译模型与思考强度"
               icon={Icon.Cog}
               shortcut={crossShortcut("m", ["shift"])}
               onAction={openModelSettings}
@@ -316,11 +357,18 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
             <Form.Dropdown.Item key={key} value={key} title={LANGUAGE_LABELS[key]} />
           ))}
         </Form.Dropdown>
+        <Form.Dropdown id="effort" title="思考强度" defaultValue={thinkingEffort}>
+          {THINKING_EFFORT_OPTIONS.map((opt) => (
+            <Form.Dropdown.Item key={opt.value} value={opt.value} title={opt.title} />
+          ))}
+        </Form.Dropdown>
       </Form>
     );
   }
 
+  const effortLabel = getThinkingEffortShortLabel(thinkingEffort);
   const modelBadge = provider.isCustomEndpoint ? `${translateModel} @ ${providerHost}` : translateModel;
+  const effortSuffix = thinkingEffort !== "default" ? ` · \`思考:${effortLabel}\`` : "";
 
   let markdown = "";
   if (error) {
@@ -334,7 +382,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
           ? "*正在生成译文...*"
           : "*暂无译文*";
 
-    markdown = `${mainOutput}\n\n---\n\n**原文** · \`${LANGUAGE_LABELS[targetLang]}\` · \`${modelBadge}\`\n\n> ${sourceText.replace(/\n/g, "\n> ")}`;
+    markdown = `${mainOutput}\n\n---\n\n**原文** · \`${LANGUAGE_LABELS[targetLang]}\` · \`${modelBadge}\`${effortSuffix}\n\n> ${sourceText.replace(/\n/g, "\n> ")}`;
   }
 
   return (
@@ -412,6 +460,20 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
                 />
               ))}
             </ActionPanel.Submenu>
+            <ActionPanel.Submenu
+              title={`切换思考强度 (当前: ${effortLabel})`}
+              icon={Icon.Gauge}
+              shortcut={crossShortcut("d")}
+            >
+              {THINKING_EFFORT_OPTIONS.map((opt) => (
+                <Action
+                  key={opt.value}
+                  title={opt.title}
+                  icon={opt.value === thinkingEffort ? Icon.CheckCircle : Icon.Circle}
+                  onAction={() => void handleChangeThinkingEffort(opt.value)}
+                />
+              ))}
+            </ActionPanel.Submenu>
             <Action
               title="重新翻译"
               icon={Icon.RotateClockwise}
@@ -419,7 +481,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
               onAction={() => setRunNonce((n) => n + 1)}
             />
             <Action
-              title="切换翻译模型"
+              title="配置翻译模型与思考强度"
               icon={Icon.Cog}
               shortcut={crossShortcut("m", ["shift"])}
               onAction={openModelSettings}

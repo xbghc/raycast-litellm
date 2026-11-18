@@ -16,11 +16,17 @@ import {
   SavedModelConfig,
   fetchInstalledModels,
   getCommandModel,
+  getCommandThinkingEffort,
   guessTextModel,
   guessVisionModel,
   saveCommandModel,
 } from "../lib/model-store";
-import { crossShortcut } from "../lib/types";
+import {
+  THINKING_EFFORT_OPTIONS,
+  ThinkingEffort,
+  crossShortcut,
+  getThinkingEffortShortLabel,
+} from "../lib/types";
 
 const NONE_OCR_VALUE = "__none__";
 
@@ -34,19 +40,19 @@ const COMMAND_META: Record<
   }
 > = {
   ocr: {
-    navTitle: "配置视觉 OCR 模型",
+    navTitle: "配置视觉 OCR 模型与思考强度",
     fieldTitle: "OCR 模型",
     infoText: "用于视觉大模型 OCR 识别；仅作用于当前 OCR 命令生效的 Provider",
     placeholder: "例如 glm-ocr 或 qwen2.5vl:7b",
   },
   translate: {
-    navTitle: "配置翻译模型",
+    navTitle: "配置翻译模型与思考强度",
     fieldTitle: "翻译模型",
     infoText: "专用于 t ${text} 翻译命令；仅绑定到翻译命令当前生效的 Provider",
     placeholder: "例如 qwen2.5:7b 或 gpt-4o-mini",
   },
   ask: {
-    navTitle: "配置问答模型",
+    navTitle: "配置问答模型与思考强度",
     fieldTitle: "问答模型",
     infoText: "专用于 q ${text} 问答命令；仅绑定到问答命令当前生效的 Provider",
     placeholder: "例如 qwen3:8b 或 acp2api 模型名",
@@ -71,9 +77,12 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
   const [manualMode, setManualMode] = useState<boolean>(false);
 
   const initialSaved = getCommandModel(props.initialConfig, props.command, props.provider);
+  const initialEffort = getCommandThinkingEffort(props.initialConfig, props.command, props.provider);
+
   const [selectedModel, setSelectedModel] = useState<string>(
     props.command === "ocr" ? initialSaved || NONE_OCR_VALUE : initialSaved
   );
+  const [thinkingEffort, setThinkingEffort] = useState<ThinkingEffort>(initialEffort);
 
   useEffect(() => {
     setActiveProvider(props.provider);
@@ -86,6 +95,12 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
     setFetchError(null);
 
     const savedForProvider = getCommandModel(props.initialConfig, props.command, currentProvider);
+    const savedEffortForProvider = getCommandThinkingEffort(
+      props.initialConfig,
+      props.command,
+      currentProvider
+    );
+    setThinkingEffort(savedEffortForProvider);
 
     try {
       const list = await fetchInstalledModels(currentProvider.endpoint, currentProvider.apiKey);
@@ -142,12 +157,15 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
       props.initialConfig,
       props.command,
       activeProvider.endpoint,
-      cleanModel
+      cleanModel,
+      thinkingEffort
     );
 
+    const effortBadge =
+      thinkingEffort !== "default" ? ` · 思考:${getThinkingEffortShortLabel(thinkingEffort)}` : "";
     await showToast({
       style: Toast.Style.Success,
-      title: cleanModel ? `已保存${meta.fieldTitle}: ${cleanModel}` : "已保存配置",
+      title: cleanModel ? `已保存: ${cleanModel}${effortBadge}` : "已保存配置",
     });
     props.onSaved(updated);
   };
@@ -172,7 +190,7 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
       navigationTitle={meta.navTitle}
       actions={
         <ActionPanel>
-          <Action.SubmitForm title="保存模型配置" icon={Icon.CheckCircle} onSubmit={handleSubmit} />
+          <Action.SubmitForm title="保存配置" icon={Icon.CheckCircle} onSubmit={handleSubmit} />
           <Action
             title="配置当前命令独立 Endpoint / API Key"
             icon={Icon.Network}
@@ -236,6 +254,18 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
           autoFocus
         />
       )}
+
+      <Form.Dropdown
+        id="thinkingEffort"
+        title="思考强度"
+        info="OpenAI / LiteLLM / acp2api 接口传递 reasoning_effort；Ollama 接口传递 think。若目标模型不支持该参数会自动降级兼容"
+        value={thinkingEffort}
+        onChange={(v) => setThinkingEffort(v as ThinkingEffort)}
+      >
+        {THINKING_EFFORT_OPTIONS.map((opt) => (
+          <Form.Dropdown.Item key={opt.value} value={opt.value} title={opt.title} />
+        ))}
+      </Form.Dropdown>
     </Form>
   );
 }

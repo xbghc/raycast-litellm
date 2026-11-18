@@ -31,11 +31,20 @@ import {
   SavedModelConfig,
   formatEndpointHost,
   getCommandModel,
+  getCommandThinkingEffort,
   loadModelConfig,
   resolveCommandProvider,
+  saveCommandThinkingEffort,
 } from "./lib/model-store";
 import { runImageOcr } from "./lib/ocr-engine";
-import { ClipboardImageItem, OcrEngineType, crossShortcut } from "./lib/types";
+import {
+  ClipboardImageItem,
+  OcrEngineType,
+  THINKING_EFFORT_OPTIONS,
+  ThinkingEffort,
+  crossShortcut,
+  getThinkingEffortShortLabel,
+} from "./lib/types";
 
 export default function OcrCommand() {
   const prefs = getPreferenceValues<Preferences.Ocr>();
@@ -64,6 +73,10 @@ export default function OcrCommand() {
     () => getCommandModel(modelConfig, "ocr", provider),
     [modelConfig, provider]
   );
+  const thinkingEffort = useMemo(
+    () => getCommandThinkingEffort(modelConfig, "ocr", provider),
+    [modelConfig, provider]
+  );
   const providerHost = useMemo(() => formatEndpointHost(provider.endpoint), [provider.endpoint]);
 
   const itemsRef = useRef<ClipboardImageItem[]>([]);
@@ -90,6 +103,25 @@ export default function OcrCommand() {
       />
     );
   }, [engine, modelConfig, pop, push, readFreshProvider]);
+
+  const handleChangeThinkingEffort = useCallback(
+    async (nextEffort: ThinkingEffort) => {
+      if (!modelConfig) return;
+      const updated = await saveCommandThinkingEffort(
+        modelConfig,
+        "ocr",
+        provider.endpoint,
+        nextEffort
+      );
+      setModelConfig(updated);
+      await showToast({
+        style: Toast.Style.Success,
+        title: `OCR 思考强度已设为: ${getThinkingEffortShortLabel(nextEffort)}`,
+        message: "按 Ctrl/⌘+R 可重新识别当前图片",
+      });
+    },
+    [modelConfig, provider.endpoint]
+  );
 
   const getCacheKey = useCallback(
     (targetEngine: OcrEngineType) => {
@@ -165,6 +197,7 @@ export default function OcrCommand() {
           endpoint: provider.endpoint,
           model: visionModel,
           apiKey: provider.apiKey,
+          thinkingEffort,
           signal: controller.signal,
           onProgress: (partial) => {
             setLivePreviewText((prev) => ({ ...prev, [item.id]: partial }));
@@ -206,7 +239,7 @@ export default function OcrCommand() {
         }
       }
     },
-    [getCacheKey, provider.apiKey, provider.endpoint, visionModel]
+    [getCacheKey, provider.apiKey, provider.endpoint, thinkingEffort, visionModel]
   );
 
   // Automatically trigger OCR whenever selection or OCR engine changes
@@ -282,6 +315,7 @@ export default function OcrCommand() {
     return { pinned, today, earlier };
   }, [items]);
 
+  const effortLabel = getThinkingEffortShortLabel(thinkingEffort);
   const visionLabel =
     provider.isCustomEndpoint && visionModel ? `${visionModel} @ ${providerHost}` : visionModel;
 
@@ -313,9 +347,11 @@ export default function OcrCommand() {
     }
 
     const fileUrl = toFileMarkdownUrl(item.cachedPath);
+    const effortBadge =
+      engine === "llm" && thinkingEffort !== "default" ? ` · \`思考:${effortLabel}\`` : "";
     const metaFooter = `\`${item.width > 0 ? `${item.width}×${item.height}` : item.mimeType}\` · \`${
       engine === "system" ? "系统原生 OCR" : visionLabel
-    }\` · ${formatRelativeTime(item.copiedAt)}`;
+    }\`${effortBadge} · ${formatRelativeTime(item.copiedAt)}`;
 
     return `${bodySection}\n\n---\n\n![Clipboard Image](${fileUrl})\n\n${metaFooter}`;
   };
@@ -434,8 +470,22 @@ export default function OcrCommand() {
                 shortcut={crossShortcut("e")}
                 onAction={() => setEngine((prev) => (prev === "system" ? "llm" : "system"))}
               />
+              <ActionPanel.Submenu
+                title={`切换视觉模型思考强度 (当前: ${effortLabel})`}
+                icon={Icon.Gauge}
+                shortcut={crossShortcut("d")}
+              >
+                {THINKING_EFFORT_OPTIONS.map((opt) => (
+                  <Action
+                    key={opt.value}
+                    title={opt.title}
+                    icon={opt.value === thinkingEffort ? Icon.CheckCircle : Icon.Circle}
+                    onAction={() => void handleChangeThinkingEffort(opt.value)}
+                  />
+                ))}
+              </ActionPanel.Submenu>
               <Action
-                title="切换视觉 OCR 模型"
+                title="配置视觉 OCR 模型与思考强度"
                 icon={Icon.Cog}
                 shortcut={crossShortcut("m", ["shift"])}
                 onAction={openModelSettings}
@@ -523,7 +573,7 @@ export default function OcrCommand() {
           actions={
             <ActionPanel>
               <Action title="重新扫描剪贴板" icon={Icon.ArrowClockwise} onAction={refreshClipboard} />
-              <Action title="切换视觉 OCR 模型" icon={Icon.Cog} onAction={openModelSettings} />
+              <Action title="配置视觉 OCR 模型与思考强度" icon={Icon.Cog} onAction={openModelSettings} />
               <Action
                 title="配置 OCR 独立 Endpoint / API Key"
                 icon={Icon.Network}

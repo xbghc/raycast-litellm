@@ -1,9 +1,10 @@
-import { ChatTurn, StreamProgress } from "./types";
+import { ChatTurn, StreamProgress, ThinkingEffort } from "./types";
 
 export interface LlmRequestOptions {
   endpoint: string;
   model: string;
   apiKey?: string;
+  thinkingEffort?: ThinkingEffort;
   options?: {
     temperature?: number;
     num_ctx?: number;
@@ -66,6 +67,37 @@ export function resolveEndpoint(rawEndpoint: string): ResolvedEndpoint {
   };
 }
 
+export function isOllamaNativeEndpoint(rawEndpoint: string): boolean {
+  return resolveEndpoint(rawEndpoint).mode === "ollama";
+}
+
+type OllamaThinkParam = boolean | "low" | "medium" | "high";
+
+function toOllamaThinkParam(effort?: ThinkingEffort): OllamaThinkParam | undefined {
+  switch (effort) {
+    case "none":
+      return false;
+    case "minimal":
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+    case "xhigh":
+      return "high";
+    case "default":
+    default:
+      return undefined;
+  }
+}
+
+function toOpenAiReasoningEffort(
+  effort?: ThinkingEffort
+): Exclude<ThinkingEffort, "default"> | undefined {
+  if (!effort || effort === "default") return undefined;
+  return effort;
+}
+
 /**
  * Splits inline `<think>...</think>` reasoning blocks from final visible content,
  * merging with any explicit `thinking` field returned by Ollama/OpenAI APIs.
@@ -101,8 +133,11 @@ function buildHeaders(apiKey?: string): Record<string, string> {
   return headers;
 }
 
-async function streamOllamaChat(url: string, opts: LlmRequestOptions): Promise<StreamProgress | "FALLBACK_OPENAI"> {
-  const payload = {
+async function postOllamaWithThinkFallback(
+  url: string,
+  opts: LlmRequestOptions
+): Promise<{ res: Response; preReadErrorText?: string }> {
+  const basePayload = {
     model: opts.model.trim(),
     stream: true,
     ...(opts.options ? { options: opts.options } : {}),
@@ -113,15 +148,51 @@ async function streamOllamaChat(url: string, opts: LlmRequestOptions): Promise<S
     })),
   };
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: buildHeaders(opts.apiKey),
-    body: JSON.stringify(payload),
-    signal: opts.signal,
-  });
+  const initialThink = toOllamaThinkParam(opts.thinkingEffort);
+  const candidates: Array<OllamaThinkParam | undefined> = [initialThink];
+  if (typeof initialThink === "string") {
+    // Models like qwen3 / deepseek-r1 only accept boolean `think: true | false`
+    candidates.push(true, undefined);
+  } else if (initialThink !== undefined) {
+    // Non-reasoning models that reject `think` altogether
+    candidates.push(undefined);
+  }
+
+  let lastRes: Response | undefined;
+  let lastErrText = "";
+
+  for (let i = 0; i < candidates.length; i++) {
+    const thinkVal = candidates[i];
+    const payload =
+      thinkVal !== undefined ? { ...basePayload, think: thinkVal } : basePayload;
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: buildHeaders(opts.apiKey),
+      body: JSON.stringify(payload),
+      signal: opts.signal,
+    });
+
+    if (res.ok || i === candidates.length - 1 || res.status !== 400) {
+      return { res };
+    }
+
+    const errText = await res.text().catch(() => "");
+    if (!/think/i.test(errText)) {
+      return { res, preReadErrorText: errText };
+    }
+    lastRes = res;
+    lastErrText = errText;
+  }
+
+  return { res: lastRes!, preReadErrorText: lastErrText };
+}
+
+async function streamOllamaChat(url: string, opts: LlmRequestOptions): Promise<StreamProgress | "FALLBACK_OPENAI"> {
+  const { res, preReadErrorText } = await postOllamaWithThinkFallback(url, opts);
 
   if ((res.status === 404 || res.status === 405) && opts.endpoint) {
-    const errText = await res.text().catch(() => "");
+    const errText = preReadErrorText ?? (await res.text().catch(() => ""));
     if (!errText.toLowerCase().includes("model") && !errText.toLowerCase().includes("ollama")) {
       return "FALLBACK_OPENAI";
     }
@@ -129,7 +200,7 @@ async function streamOllamaChat(url: string, opts: LlmRequestOptions): Promise<S
   }
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => "");
+    const errText = preReadErrorText ?? (await res.text().catch(() => ""));
     throw new Error(parseApiError(res.status, errText, opts.model, true));
   }
 
@@ -191,8 +262,11 @@ async function streamOllamaChat(url: string, opts: LlmRequestOptions): Promise<S
   return finalResult;
 }
 
-async function streamOpenAiChat(url: string, opts: LlmRequestOptions): Promise<StreamProgress> {
-  const payload = {
+async function postOpenAiWithEffortFallback(
+  url: string,
+  opts: LlmRequestOptions
+): Promise<{ res: Response; preReadErrorText?: string }> {
+  const basePayload = {
     model: opts.model.trim(),
     stream: true,
     ...(opts.options?.temperature !== undefined ? { temperature: opts.options.temperature } : {}),
@@ -216,15 +290,51 @@ async function streamOpenAiChat(url: string, opts: LlmRequestOptions): Promise<S
     }),
   };
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: buildHeaders(opts.apiKey),
-    body: JSON.stringify(payload),
-    signal: opts.signal,
-  });
+  const initialEffort = toOpenAiReasoningEffort(opts.thinkingEffort);
+  const candidates: Array<string | undefined> = [initialEffort];
+  if (initialEffort === "xhigh") {
+    candidates.push("high", undefined);
+  } else if (initialEffort === "minimal") {
+    candidates.push("low", undefined);
+  } else if (initialEffort !== undefined) {
+    candidates.push(undefined);
+  }
+
+  let lastRes: Response | undefined;
+  let lastErrText = "";
+
+  for (let i = 0; i < candidates.length; i++) {
+    const effortVal = candidates[i];
+    const payload =
+      effortVal !== undefined ? { ...basePayload, reasoning_effort: effortVal } : basePayload;
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: buildHeaders(opts.apiKey),
+      body: JSON.stringify(payload),
+      signal: opts.signal,
+    });
+
+    if (res.ok || i === candidates.length - 1 || res.status !== 400) {
+      return { res };
+    }
+
+    const errText = await res.text().catch(() => "");
+    if (!/reasoning_effort|reasoning|thinking|unsupported value/i.test(errText)) {
+      return { res, preReadErrorText: errText };
+    }
+    lastRes = res;
+    lastErrText = errText;
+  }
+
+  return { res: lastRes!, preReadErrorText: lastErrText };
+}
+
+async function streamOpenAiChat(url: string, opts: LlmRequestOptions): Promise<StreamProgress> {
+  const { res, preReadErrorText } = await postOpenAiWithEffortFallback(url, opts);
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => "");
+    const errText = preReadErrorText ?? (await res.text().catch(() => ""));
     throw new Error(parseApiError(res.status, errText, opts.model, false));
   }
 
@@ -279,10 +389,6 @@ async function streamOpenAiChat(url: string, opts: LlmRequestOptions): Promise<S
   const finalResult = splitThinkingAndContent(rawContent, explicitThinking);
   opts.onProgress?.(finalResult);
   return finalResult;
-}
-
-export function isOllamaNativeEndpoint(rawEndpoint: string): boolean {
-  return resolveEndpoint(rawEndpoint).mode === "ollama";
 }
 
 function parseApiError(status: number, bodyText: string, model: string, isOllama: boolean): string {

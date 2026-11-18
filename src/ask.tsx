@@ -23,15 +23,28 @@ import {
   SavedModelConfig,
   formatEndpointHost,
   getCommandModel,
+  getCommandThinkingEffort,
   loadModelConfig,
   resolveCommandProvider,
+  saveCommandThinkingEffort,
 } from "./lib/model-store";
 import { saveAndOpenInOllama } from "./lib/ollama-app";
-import { ChatTurn, crossShortcut } from "./lib/types";
+import {
+  ChatTurn,
+  THINKING_EFFORT_OPTIONS,
+  ThinkingEffort,
+  crossShortcut,
+  getThinkingEffortShortLabel,
+  isValidThinkingEffort,
+} from "./lib/types";
 
-function FollowUpForm(props: { onSend: (question: string) => void }) {
+function FollowUpForm(props: {
+  initialEffort: ThinkingEffort;
+  onSend: (question: string, effort: ThinkingEffort) => void;
+}) {
   const { pop } = useNavigation();
   const [question, setQuestion] = useState("");
+  const [effort, setEffort] = useState<ThinkingEffort>(props.initialEffort);
 
   return (
     <Form
@@ -46,7 +59,7 @@ function FollowUpForm(props: { onSend: (question: string) => void }) {
                 void showToast({ style: Toast.Style.Failure, title: "请输入追问内容" });
                 return;
               }
-              props.onSend(question.trim());
+              props.onSend(question.trim(), effort);
               pop();
             }}
           />
@@ -61,6 +74,16 @@ function FollowUpForm(props: { onSend: (question: string) => void }) {
         onChange={setQuestion}
         autoFocus
       />
+      <Form.Dropdown
+        id="effort"
+        title="思考强度"
+        value={effort}
+        onChange={(v) => setEffort(v as ThinkingEffort)}
+      >
+        {THINKING_EFFORT_OPTIONS.map((opt) => (
+          <Form.Dropdown.Item key={opt.value} value={opt.value} title={opt.title} />
+        ))}
+      </Form.Dropdown>
     </Form>
   );
 }
@@ -107,6 +130,10 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
     () => getCommandModel(modelConfig, "ask", provider),
     [modelConfig, provider]
   );
+  const thinkingEffort = useMemo(
+    () => getCommandThinkingEffort(modelConfig, "ask", provider),
+    [modelConfig, provider]
+  );
   const canSyncToOllama = useMemo(
     () => isOllamaNativeEndpoint(provider.endpoint),
     [provider.endpoint]
@@ -122,7 +149,11 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   }, []);
 
   const sendConversationToModel = useCallback(
-    async (conversationTurns: ChatTurn[], targetModel: string) => {
+    async (
+      conversationTurns: ChatTurn[],
+      targetModel: string,
+      effortOverride?: ThinkingEffort
+    ) => {
       if (!targetModel) return;
 
       abortRef.current?.abort();
@@ -139,6 +170,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
           endpoint: provider.endpoint,
           model: targetModel,
           apiKey: provider.apiKey,
+          thinkingEffort: effortOverride ?? thinkingEffort,
           signal: controller.signal,
           messages: [
             {
@@ -177,7 +209,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
         }
       }
     },
-    [provider.apiKey, provider.endpoint]
+    [provider.apiKey, provider.endpoint, thinkingEffort]
   );
 
   // Trigger initial completion once askModel is available
@@ -190,12 +222,12 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       turns[0].role === "user"
     ) {
       initialTriggeredRef.current = true;
-      void sendConversationToModel(turns, askModel);
+      void sendConversationToModel(turns, askModel, thinkingEffort);
     }
     return () => {
       abortRef.current?.abort();
     };
-  }, [askModel, sendConversationToModel, turns]);
+  }, [askModel, sendConversationToModel, thinkingEffort, turns]);
 
   const openModelSettings = useCallback(() => {
     if (!modelConfig) return;
@@ -213,8 +245,36 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
     );
   }, [modelConfig, pop, push, readFreshProvider]);
 
+  const handleChangeThinkingEffort = useCallback(
+    async (nextEffort: ThinkingEffort) => {
+      if (!modelConfig) return;
+      const updated = await saveCommandThinkingEffort(
+        modelConfig,
+        "ask",
+        provider.endpoint,
+        nextEffort
+      );
+      setModelConfig(updated);
+      await showToast({
+        style: Toast.Style.Success,
+        title: `思考强度已设为: ${getThinkingEffortShortLabel(nextEffort)}`,
+        message: turnsRef.current.length > 0 ? "按 Ctrl/⌘+R 可使用新强度重新生成" : undefined,
+      });
+    },
+    [modelConfig, provider.endpoint]
+  );
+
   const handleAppendUserQuestion = useCallback(
-    (question: string) => {
+    async (question: string, effort: ThinkingEffort) => {
+      if (modelConfig && effort !== thinkingEffort) {
+        const updatedCfg = await saveCommandThinkingEffort(
+          modelConfig,
+          "ask",
+          provider.endpoint,
+          effort
+        );
+        setModelConfig(updatedCfg);
+      }
       const newUserTurn: ChatTurn = {
         id: randomUUID(),
         role: "user",
@@ -223,9 +283,9 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       };
       const updated = [...turnsRef.current, newUserTurn];
       setTurns(updated);
-      void sendConversationToModel(updated, askModel);
+      void sendConversationToModel(updated, askModel, effort);
     },
-    [askModel, sendConversationToModel]
+    [askModel, modelConfig, provider.endpoint, sendConversationToModel, thinkingEffort]
   );
 
   const handleRegenerateLast = useCallback(() => {
@@ -235,8 +295,8 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
       current.pop();
     }
     setTurns(current);
-    void sendConversationToModel(current, askModel);
-  }, [askModel, sendConversationToModel]);
+    void sendConversationToModel(current, askModel, thinkingEffort);
+  }, [askModel, sendConversationToModel, thinkingEffort]);
 
   const handleContinueInOllama = useCallback(async () => {
     if (isLoading) {
@@ -327,11 +387,23 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
             <Action.SubmitForm
               title="发送提问"
               icon={Icon.Message}
-              onSubmit={(values: { prompt: string }) => {
+              onSubmit={async (values: { prompt: string; effort?: string }) => {
                 const q = (values.prompt || "").trim();
                 if (!q) {
                   void showToast({ style: Toast.Style.Failure, title: "请输入你的问题" });
                   return;
+                }
+                const chosenEffort = isValidThinkingEffort(values.effort)
+                  ? values.effort
+                  : thinkingEffort;
+                if (chosenEffort !== thinkingEffort) {
+                  const updatedCfg = await saveCommandThinkingEffort(
+                    modelConfig,
+                    "ask",
+                    provider.endpoint,
+                    chosenEffort
+                  );
+                  setModelConfig(updatedCfg);
                 }
                 const firstTurn: ChatTurn = {
                   id: randomUUID(),
@@ -341,11 +413,11 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
                 };
                 initialTriggeredRef.current = true;
                 setTurns([firstTurn]);
-                void sendConversationToModel([firstTurn], askModel);
+                void sendConversationToModel([firstTurn], askModel, chosenEffort);
               }}
             />
             <Action
-              title="切换问答模型"
+              title="配置问答模型与思考强度"
               icon={Icon.Cog}
               shortcut={crossShortcut("m", ["shift"])}
               onAction={openModelSettings}
@@ -370,6 +442,11 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
           placeholder="输入你想问的问题（提示：为命令设置别名 q 后，可在 Raycast 直接输入 q 空格 问题）"
           autoFocus
         />
+        <Form.Dropdown id="effort" title="思考强度" defaultValue={thinkingEffort}>
+          {THINKING_EFFORT_OPTIONS.map((opt) => (
+            <Form.Dropdown.Item key={opt.value} value={opt.value} title={opt.title} />
+          ))}
+        </Form.Dropdown>
       </Form>
     );
   }
@@ -414,9 +491,11 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   }
 
   const providerBadge = provider.isCustomEndpoint || !canSyncToOllama ? ` (${providerHost})` : "";
+  const effortLabel = getThinkingEffortShortLabel(thinkingEffort);
+  const effortBadge = thinkingEffort !== "default" ? ` · 思考:\`${effortLabel}\`` : "";
   const footer = canSyncToOllama
-    ? `\n\n---\n*模型: \`${askModel}\`${providerBadge} · 按 \`Enter\` 进入 Ollama 桌面端继续对话 · 按 \`Ctrl/⌘ + N\` 在当前面板快速追问*`
-    : `\n\n---\n*模型: \`${askModel}\`${providerBadge} · 按 \`Enter\` 复制回答 · 按 \`Ctrl/⌘ + N\` 在当前面板快速追问*`;
+    ? `\n\n---\n*模型: \`${askModel}\`${providerBadge}${effortBadge} · 按 \`Enter\` 进入 Ollama 桌面端继续对话 · 按 \`Ctrl/⌘ + N\` 在当前面板快速追问*`
+    : `\n\n---\n*模型: \`${askModel}\`${providerBadge}${effortBadge} · 按 \`Enter\` 复制回答 · 按 \`Ctrl/⌘ + N\` 在当前面板快速追问*`;
   const markdown = renderedBlocks.join("\n\n---\n\n") + footer;
 
   return (
@@ -444,7 +523,14 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
                   title="在当前面板继续追问"
                   icon={Icon.PlusCircle}
                   shortcut={crossShortcut("n")}
-                  onAction={() => push(<FollowUpForm onSend={handleAppendUserQuestion} />)}
+                  onAction={() =>
+                    push(
+                      <FollowUpForm
+                        initialEffort={thinkingEffort}
+                        onSend={handleAppendUserQuestion}
+                      />
+                    )
+                  }
                 />
                 <Action
                   title="粘贴回答到当前应用"
@@ -467,7 +553,14 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
                   title="在当前面板继续追问"
                   icon={Icon.PlusCircle}
                   shortcut={crossShortcut("n")}
-                  onAction={() => push(<FollowUpForm onSend={handleAppendUserQuestion} />)}
+                  onAction={() =>
+                    push(
+                      <FollowUpForm
+                        initialEffort={thinkingEffort}
+                        onSend={handleAppendUserQuestion}
+                      />
+                    )
+                  }
                 />
                 <Action
                   title="粘贴回答到当前应用"
@@ -491,6 +584,20 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
                 onAction={() => setShowThinking((v) => !v)}
               />
             )}
+            <ActionPanel.Submenu
+              title={`切换思考强度 (当前: ${effortLabel})`}
+              icon={Icon.Gauge}
+              shortcut={crossShortcut("d")}
+            >
+              {THINKING_EFFORT_OPTIONS.map((opt) => (
+                <Action
+                  key={opt.value}
+                  title={opt.title}
+                  icon={opt.value === thinkingEffort ? Icon.CheckCircle : Icon.Circle}
+                  onAction={() => void handleChangeThinkingEffort(opt.value)}
+                />
+              ))}
+            </ActionPanel.Submenu>
             <Action
               title="重新生成回答"
               icon={Icon.RotateClockwise}
@@ -498,7 +605,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
               onAction={handleRegenerateLast}
             />
             <Action
-              title="切换问答模型"
+              title="配置问答模型与思考强度"
               icon={Icon.Cog}
               shortcut={crossShortcut("m", ["shift"])}
               onAction={openModelSettings}
