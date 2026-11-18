@@ -9,15 +9,22 @@ import {
   Toast,
   getPreferenceValues,
   getSelectedText,
+  openCommandPreferences,
   openExtensionPreferences,
   showHUD,
   showToast,
   useNavigation,
 } from "@raycast/api";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ModelConfigForm } from "./components/ModelConfigForm";
 import { streamChat } from "./lib/llm";
-import { SavedModelConfig, loadModelConfig } from "./lib/model-store";
+import {
+  SavedModelConfig,
+  formatEndpointHost,
+  getCommandModel,
+  loadModelConfig,
+  resolveCommandProvider,
+} from "./lib/model-store";
 import { TargetLanguage, crossShortcut } from "./lib/types";
 
 const LANGUAGE_LABELS: Record<TargetLanguage, string> = {
@@ -102,6 +109,15 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
   const prefs = getPreferenceValues<Preferences.Translate>();
   const { push, pop } = useNavigation();
 
+  const provider = useMemo(
+    () => resolveCommandProvider(prefs),
+    [prefs.apiKey, prefs.customApiKey, prefs.customEndpoint, prefs.endpoint]
+  );
+  const readFreshProvider = useCallback(
+    () => resolveCommandProvider(getPreferenceValues<Preferences.Translate>()),
+    []
+  );
+
   const rawInitial = (props.arguments.text || props.fallbackText || "").trim();
   const resolvedInitial = props.arguments.text?.trim()
     ? props.arguments.text.trim()
@@ -110,7 +126,9 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
   const [modelConfig, setModelConfig] = useState<SavedModelConfig | null>(null);
   const [sourceText, setSourceText] = useState<string>(resolvedInitial);
   const [initializingInput, setInitializingInput] = useState<boolean>(!resolvedInitial);
-  const [targetLang, setTargetLang] = useState<TargetLanguage>(prefs.targetLang || "auto_zh_en");
+  const [targetLang, setTargetLang] = useState<TargetLanguage>(
+    (prefs.targetLang as TargetLanguage) || "auto_zh_en"
+  );
 
   const [translated, setTranslated] = useState<string>("");
   const [thinking, setThinking] = useState<string>("");
@@ -118,7 +136,11 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
   const [error, setError] = useState<string | null>(null);
   const [runNonce, setRunNonce] = useState<number>(0);
 
-  const translateModel = modelConfig?.translateModel || "";
+  const translateModel = useMemo(
+    () => getCommandModel(modelConfig, "translate", provider),
+    [modelConfig, provider]
+  );
+  const providerHost = useMemo(() => formatEndpointHost(provider.endpoint), [provider.endpoint]);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -129,17 +151,17 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
     if (!modelConfig) return;
     push(
       <ModelConfigForm
-        endpoint={prefs.endpoint}
-        apiKey={prefs.apiKey}
+        command="translate"
+        provider={readFreshProvider()}
+        refreshProvider={readFreshProvider}
         initialConfig={modelConfig}
-        highlightField="translate"
         onSaved={(updated) => {
           setModelConfig(updated);
           pop();
         }}
       />
     );
-  }, [modelConfig, pop, prefs.apiKey, prefs.endpoint, push]);
+  }, [modelConfig, pop, push, readFreshProvider]);
 
   // Fallback to selected text or clipboard text when invoked without `${text}` argument
   useEffect(() => {
@@ -194,9 +216,9 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
 
     try {
       const final = await streamChat({
-        endpoint: prefs.endpoint,
+        endpoint: provider.endpoint,
         model: translateModel,
-        apiKey: prefs.apiKey,
+        apiKey: provider.apiKey,
         signal: controller.signal,
         messages: [
           { role: "system", content: buildTranslationPrompt(targetLang) },
@@ -222,7 +244,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
         setIsLoading(false);
       }
     }
-  }, [prefs.apiKey, prefs.endpoint, sourceText, targetLang, translateModel]);
+  }, [provider.apiKey, provider.endpoint, sourceText, targetLang, translateModel]);
 
   useEffect(() => {
     if (initializingInput || !sourceText.trim() || !translateModel) return;
@@ -232,14 +254,14 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
     };
   }, [initializingInput, sourceText, targetLang, translateModel, runNonce, runTranslation]);
 
-  // First-run automatic local model picker
+  // First-run or new-provider model picker
   if (modelConfig && !translateModel) {
     return (
       <ModelConfigForm
-        endpoint={prefs.endpoint}
-        apiKey={prefs.apiKey}
+        command="translate"
+        provider={provider}
+        refreshProvider={readFreshProvider}
         initialConfig={modelConfig}
-        highlightField="translate"
         onSaved={setModelConfig}
       />
     );
@@ -248,7 +270,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
   if (modelConfig && !initializingInput && !sourceText.trim()) {
     return (
       <Form
-        navigationTitle={`翻译 · ${translateModel}`}
+        navigationTitle={`翻译 · ${translateModel}${provider.isCustomEndpoint ? ` @ ${providerHost}` : ""}`}
         actions={
           <ActionPanel>
             <Action.SubmitForm
@@ -264,12 +286,22 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
               }}
             />
             <Action
-              title="配置本地模型 (OCR / 翻译 / 问答)"
+              title="切换翻译模型"
               icon={Icon.Cog}
               shortcut={crossShortcut("m", ["shift"])}
               onAction={openModelSettings}
             />
-            <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
+            <Action
+              title="配置翻译独立 Endpoint / API Key"
+              icon={Icon.Network}
+              shortcut={crossShortcut("e", ["shift"])}
+              onAction={openCommandPreferences}
+            />
+            <Action
+              title="打开全局默认偏好设置"
+              icon={Icon.Gear}
+              onAction={openExtensionPreferences}
+            />
           </ActionPanel>
         }
       >
@@ -288,6 +320,8 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
     );
   }
 
+  const modelBadge = provider.isCustomEndpoint ? `${translateModel} @ ${providerHost}` : translateModel;
+
   let markdown = "";
   if (error) {
     markdown = `> ⚠️ **翻译请求失败**\n>\n> ${error.replace(/\n/g, "\n> ")}\n\n---\n\n**原文：**\n\n${sourceText}`;
@@ -300,7 +334,7 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
           ? "*正在生成译文...*"
           : "*暂无译文*";
 
-    markdown = `${mainOutput}\n\n---\n\n**原文** · \`${LANGUAGE_LABELS[targetLang]}\` · \`${translateModel}\`\n\n> ${sourceText.replace(/\n/g, "\n> ")}`;
+    markdown = `${mainOutput}\n\n---\n\n**原文** · \`${LANGUAGE_LABELS[targetLang]}\` · \`${modelBadge}\`\n\n> ${sourceText.replace(/\n/g, "\n> ")}`;
   }
 
   return (
@@ -385,12 +419,22 @@ export default function TranslateCommand(props: LaunchProps<{ arguments: Argumen
               onAction={() => setRunNonce((n) => n + 1)}
             />
             <Action
-              title="配置本地模型 (OCR / 翻译 / 问答)"
+              title="切换翻译模型"
               icon={Icon.Cog}
               shortcut={crossShortcut("m", ["shift"])}
               onAction={openModelSettings}
             />
-            <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
+            <Action
+              title="配置翻译独立 Endpoint / API Key"
+              icon={Icon.Network}
+              shortcut={crossShortcut("e", ["shift"])}
+              onAction={openCommandPreferences}
+            />
+            <Action
+              title="打开全局默认偏好设置"
+              icon={Icon.Gear}
+              onAction={openExtensionPreferences}
+            />
           </ActionPanel.Section>
         </ActionPanel>
       }

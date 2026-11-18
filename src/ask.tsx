@@ -9,6 +9,7 @@ import {
   Toast,
   closeMainWindow,
   getPreferenceValues,
+  openCommandPreferences,
   openExtensionPreferences,
   showHUD,
   showToast,
@@ -17,8 +18,14 @@ import {
 import { randomUUID } from "node:crypto";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ModelConfigForm } from "./components/ModelConfigForm";
-import { streamChat, turnsToMessages } from "./lib/llm";
-import { SavedModelConfig, loadModelConfig } from "./lib/model-store";
+import { isOllamaNativeEndpoint, streamChat, turnsToMessages } from "./lib/llm";
+import {
+  SavedModelConfig,
+  formatEndpointHost,
+  getCommandModel,
+  loadModelConfig,
+  resolveCommandProvider,
+} from "./lib/model-store";
 import { saveAndOpenInOllama } from "./lib/ollama-app";
 import { ChatTurn, crossShortcut } from "./lib/types";
 
@@ -62,6 +69,15 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   const prefs = getPreferenceValues<Preferences.Ask>();
   const { push, pop } = useNavigation();
 
+  const provider = useMemo(
+    () => resolveCommandProvider(prefs),
+    [prefs.apiKey, prefs.customApiKey, prefs.customEndpoint, prefs.endpoint]
+  );
+  const readFreshProvider = useCallback(
+    () => resolveCommandProvider(getPreferenceValues<Preferences.Ask>()),
+    []
+  );
+
   const rawInput = (props.arguments.text || props.fallbackText || "").trim();
   const initialPrompt = props.arguments.text?.trim()
     ? props.arguments.text.trim()
@@ -87,7 +103,15 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   const [showThinking, setShowThinking] = useState<boolean>(false);
   const [syncedChatId, setSyncedChatId] = useState<string | undefined>(undefined);
 
-  const askModel = modelConfig?.askModel || "";
+  const askModel = useMemo(
+    () => getCommandModel(modelConfig, "ask", provider),
+    [modelConfig, provider]
+  );
+  const canSyncToOllama = useMemo(
+    () => isOllamaNativeEndpoint(provider.endpoint),
+    [provider.endpoint]
+  );
+  const providerHost = useMemo(() => formatEndpointHost(provider.endpoint), [provider.endpoint]);
 
   const abortRef = useRef<AbortController | null>(null);
   const turnsRef = useRef<ChatTurn[]>(turns);
@@ -112,9 +136,9 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
 
       try {
         const final = await streamChat({
-          endpoint: prefs.endpoint,
+          endpoint: provider.endpoint,
           model: targetModel,
-          apiKey: prefs.apiKey,
+          apiKey: provider.apiKey,
           signal: controller.signal,
           messages: [
             {
@@ -153,7 +177,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
         }
       }
     },
-    [prefs.apiKey, prefs.endpoint]
+    [provider.apiKey, provider.endpoint]
   );
 
   // Trigger initial completion once askModel is available
@@ -177,17 +201,17 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
     if (!modelConfig) return;
     push(
       <ModelConfigForm
-        endpoint={prefs.endpoint}
-        apiKey={prefs.apiKey}
+        command="ask"
+        provider={readFreshProvider()}
+        refreshProvider={readFreshProvider}
         initialConfig={modelConfig}
-        highlightField="ask"
         onSaved={(updated) => {
           setModelConfig(updated);
           pop();
         }}
       />
     );
-  }, [modelConfig, pop, prefs.apiKey, prefs.endpoint, push]);
+  }, [modelConfig, pop, push, readFreshProvider]);
 
   const handleAppendUserQuestion = useCallback(
     (question: string) => {
@@ -271,14 +295,23 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
     [streamingThinking, turns]
   );
 
-  // First-run automatic local model picker (preserves `turns` so saving immediately answers `q ${text}`)
+  const copyLatestAnswer = useCallback(async () => {
+    if (!latestAnswer) {
+      await showToast({ style: Toast.Style.Failure, title: "回答尚未生成完毕" });
+      return;
+    }
+    await Clipboard.copy(latestAnswer);
+    await showHUD("已复制回答到剪贴板");
+  }, [latestAnswer]);
+
+  // First-run or new-provider model picker (preserves `turns` so saving immediately answers `q ${text}`)
   if (modelConfig && !askModel) {
     return (
       <ModelConfigForm
-        endpoint={prefs.endpoint}
-        apiKey={prefs.apiKey}
+        command="ask"
+        provider={provider}
+        refreshProvider={readFreshProvider}
         initialConfig={modelConfig}
-        highlightField="ask"
         onSaved={setModelConfig}
       />
     );
@@ -288,7 +321,7 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
   if (modelConfig && turns.length === 0) {
     return (
       <Form
-        navigationTitle={`Quick Ask · ${askModel}`}
+        navigationTitle={`Quick Ask · ${askModel}${provider.isCustomEndpoint ? ` @ ${providerHost}` : ""}`}
         actions={
           <ActionPanel>
             <Action.SubmitForm
@@ -312,12 +345,22 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
               }}
             />
             <Action
-              title="配置本地模型 (OCR / 翻译 / 问答)"
+              title="切换问答模型"
               icon={Icon.Cog}
               shortcut={crossShortcut("m", ["shift"])}
               onAction={openModelSettings}
             />
-            <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
+            <Action
+              title="配置问答独立 Endpoint / API Key"
+              icon={Icon.Network}
+              shortcut={crossShortcut("e", ["shift"])}
+              onAction={openCommandPreferences}
+            />
+            <Action
+              title="打开全局默认偏好设置"
+              icon={Icon.Gear}
+              onAction={openExtensionPreferences}
+            />
           </ActionPanel>
         }
       >
@@ -370,50 +413,73 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
     renderedBlocks.push(`> ⚠️ **请求出错**\n>\n> ${error.replace(/\n/g, "\n> ")}`);
   }
 
-  const footer = `\n\n---\n*模型: \`${askModel}\` · 按 \`Enter\` 进入 Ollama 桌面端继续对话 · 按 \`Ctrl/⌘ + N\` 在当前面板快速追问*`;
+  const providerBadge = provider.isCustomEndpoint || !canSyncToOllama ? ` (${providerHost})` : "";
+  const footer = canSyncToOllama
+    ? `\n\n---\n*模型: \`${askModel}\`${providerBadge} · 按 \`Enter\` 进入 Ollama 桌面端继续对话 · 按 \`Ctrl/⌘ + N\` 在当前面板快速追问*`
+    : `\n\n---\n*模型: \`${askModel}\`${providerBadge} · 按 \`Enter\` 复制回答 · 按 \`Ctrl/⌘ + N\` 在当前面板快速追问*`;
   const markdown = renderedBlocks.join("\n\n---\n\n") + footer;
 
   return (
     <Detail
       isLoading={isLoading || !modelConfig}
-      navigationTitle={`Quick Ask · ${askModel}`}
+      navigationTitle={`Quick Ask · ${askModel}${provider.isCustomEndpoint ? ` @ ${providerHost}` : ""}`}
       markdown={markdown}
       actions={
         <ActionPanel>
           <ActionPanel.Section title="继续对话与复制">
-            <Action
-              title="进入 Ollama 继续对话"
-              icon={Icon.AppWindowSidebarLeft}
-              onAction={handleContinueInOllama}
-            />
-            <Action
-              title="复制最新回答"
-              icon={Icon.Clipboard}
-              shortcut={crossShortcut("return")}
-              onAction={async () => {
-                if (!latestAnswer) {
-                  await showToast({ style: Toast.Style.Failure, title: "回答尚未生成完毕" });
-                  return;
-                }
-                await Clipboard.copy(latestAnswer);
-                await showHUD("已复制回答到剪贴板");
-              }}
-            />
-            <Action
-              title="在当前面板继续追问"
-              icon={Icon.PlusCircle}
-              shortcut={crossShortcut("n")}
-              onAction={() => push(<FollowUpForm onSend={handleAppendUserQuestion} />)}
-            />
-            <Action
-              title="粘贴回答到当前应用"
-              icon={Icon.Document}
-              shortcut={crossShortcut("v", ["shift"])}
-              onAction={async () => {
-                if (!latestAnswer) return;
-                await Clipboard.paste(latestAnswer);
-              }}
-            />
+            {canSyncToOllama ? (
+              <>
+                <Action
+                  title="进入 Ollama 继续对话"
+                  icon={Icon.AppWindowSidebarLeft}
+                  onAction={handleContinueInOllama}
+                />
+                <Action
+                  title="复制最新回答"
+                  icon={Icon.Clipboard}
+                  shortcut={crossShortcut("return")}
+                  onAction={copyLatestAnswer}
+                />
+                <Action
+                  title="在当前面板继续追问"
+                  icon={Icon.PlusCircle}
+                  shortcut={crossShortcut("n")}
+                  onAction={() => push(<FollowUpForm onSend={handleAppendUserQuestion} />)}
+                />
+                <Action
+                  title="粘贴回答到当前应用"
+                  icon={Icon.Document}
+                  shortcut={crossShortcut("v", ["shift"])}
+                  onAction={async () => {
+                    if (!latestAnswer) return;
+                    await Clipboard.paste(latestAnswer);
+                  }}
+                />
+              </>
+            ) : (
+              <>
+                <Action
+                  title="复制最新回答"
+                  icon={Icon.Clipboard}
+                  onAction={copyLatestAnswer}
+                />
+                <Action
+                  title="在当前面板继续追问"
+                  icon={Icon.PlusCircle}
+                  shortcut={crossShortcut("n")}
+                  onAction={() => push(<FollowUpForm onSend={handleAppendUserQuestion} />)}
+                />
+                <Action
+                  title="粘贴回答到当前应用"
+                  icon={Icon.Document}
+                  shortcut={crossShortcut("return")}
+                  onAction={async () => {
+                    if (!latestAnswer) return;
+                    await Clipboard.paste(latestAnswer);
+                  }}
+                />
+              </>
+            )}
           </ActionPanel.Section>
 
           <ActionPanel.Section title="显示与模型配置">
@@ -432,12 +498,22 @@ export default function AskCommand(props: LaunchProps<{ arguments: Arguments.Ask
               onAction={handleRegenerateLast}
             />
             <Action
-              title="配置本地模型 (OCR / 翻译 / 问答)"
+              title="切换问答模型"
               icon={Icon.Cog}
               shortcut={crossShortcut("m", ["shift"])}
               onAction={openModelSettings}
             />
-            <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
+            <Action
+              title="配置问答独立 Endpoint / API Key"
+              icon={Icon.Network}
+              shortcut={crossShortcut("e", ["shift"])}
+              onAction={openCommandPreferences}
+            />
+            <Action
+              title="打开全局默认偏好设置"
+              icon={Icon.Gear}
+              onAction={openExtensionPreferences}
+            />
           </ActionPanel.Section>
         </ActionPanel>
       }

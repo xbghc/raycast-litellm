@@ -4,58 +4,110 @@ import {
   Form,
   Icon,
   Toast,
+  openCommandPreferences,
   openExtensionPreferences,
   showToast,
 } from "@raycast/api";
 import { useCallback, useEffect, useState } from "react";
 import {
+  CommandKind,
   InstalledModelInfo,
+  ResolvedProviderConfig,
   SavedModelConfig,
   fetchInstalledModels,
+  getCommandModel,
   guessTextModel,
   guessVisionModel,
-  saveModelConfig,
+  saveCommandModel,
 } from "../lib/model-store";
 import { crossShortcut } from "../lib/types";
 
 const NONE_OCR_VALUE = "__none__";
 
+const COMMAND_META: Record<
+  CommandKind,
+  {
+    navTitle: string;
+    fieldTitle: string;
+    infoText: string;
+    placeholder: string;
+  }
+> = {
+  ocr: {
+    navTitle: "配置视觉 OCR 模型",
+    fieldTitle: "OCR 模型",
+    infoText: "用于视觉大模型 OCR 识别；仅作用于当前 OCR 命令生效的 Provider",
+    placeholder: "例如 glm-ocr 或 qwen2.5vl:7b",
+  },
+  translate: {
+    navTitle: "配置翻译模型",
+    fieldTitle: "翻译模型",
+    infoText: "专用于 t ${text} 翻译命令；仅绑定到翻译命令当前生效的 Provider",
+    placeholder: "例如 qwen2.5:7b 或 gpt-4o-mini",
+  },
+  ask: {
+    navTitle: "配置问答模型",
+    fieldTitle: "问答模型",
+    infoText: "专用于 q ${text} 问答命令；仅绑定到问答命令当前生效的 Provider",
+    placeholder: "例如 qwen3:8b 或 acp2api 模型名",
+  },
+};
+
 export interface ModelConfigFormProps {
-  endpoint: string;
-  apiKey?: string;
+  command: CommandKind;
+  provider: ResolvedProviderConfig;
+  refreshProvider?: () => ResolvedProviderConfig;
   initialConfig: SavedModelConfig;
-  highlightField?: "ocr" | "translate" | "ask";
+  requireModel?: boolean;
   onSaved: (updated: SavedModelConfig) => void;
 }
 
 export function ModelConfigForm(props: ModelConfigFormProps) {
+  const meta = COMMAND_META[props.command];
+  const [activeProvider, setActiveProvider] = useState<ResolvedProviderConfig>(props.provider);
   const [models, setModels] = useState<InstalledModelInfo[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [manualMode, setManualMode] = useState<boolean>(false);
 
-  const [ocrModel, setOcrModel] = useState<string>(props.initialConfig.ocrModel || NONE_OCR_VALUE);
-  const [translateModel, setTranslateModel] = useState<string>(props.initialConfig.translateModel);
-  const [askModel, setAskModel] = useState<string>(props.initialConfig.askModel);
+  const initialSaved = getCommandModel(props.initialConfig, props.command, props.provider);
+  const [selectedModel, setSelectedModel] = useState<string>(
+    props.command === "ocr" ? initialSaved || NONE_OCR_VALUE : initialSaved
+  );
+
+  useEffect(() => {
+    setActiveProvider(props.provider);
+  }, [props.provider]);
 
   const reloadModels = useCallback(async () => {
+    const currentProvider = props.refreshProvider ? props.refreshProvider() : activeProvider;
+    setActiveProvider(currentProvider);
     setIsLoading(true);
     setFetchError(null);
+
+    const savedForProvider = getCommandModel(props.initialConfig, props.command, currentProvider);
+
     try {
-      const list = await fetchInstalledModels(props.endpoint, props.apiKey);
+      const list = await fetchInstalledModels(currentProvider.endpoint, currentProvider.apiKey);
       setModels(list);
 
       if (list.length > 0) {
         setManualMode(false);
-        const defaultText = guessTextModel(list);
-        const defaultVision = guessVisionModel(list);
-
-        setOcrModel((prev) => {
-          if (prev && prev !== NONE_OCR_VALUE) return prev;
-          return defaultVision || NONE_OCR_VALUE;
-        });
-        setTranslateModel((prev) => prev || defaultText);
-        setAskModel((prev) => prev || defaultText);
+        if (props.command === "ocr") {
+          const fallbackVision = guessVisionModel(list);
+          setSelectedModel((prev) => {
+            if (savedForProvider) return savedForProvider;
+            if (prev && prev !== NONE_OCR_VALUE && list.some((m) => m.name === prev)) return prev;
+            return fallbackVision || NONE_OCR_VALUE;
+          });
+        } else {
+          const fallbackText = guessTextModel(list);
+          setSelectedModel((prev) => {
+            if (savedForProvider) return savedForProvider;
+            if (prev && list.some((m) => m.name === prev)) return prev;
+            return fallbackText;
+          });
+        }
       } else {
         setManualMode(true);
       }
@@ -65,60 +117,70 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [props.apiKey, props.endpoint]);
+  }, [activeProvider, props]);
 
   useEffect(() => {
     void reloadModels();
-  }, [reloadModels]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.provider.endpoint, props.provider.apiKey]);
 
   const handleSubmit = async () => {
-    const cleanOcr = ocrModel === NONE_OCR_VALUE ? "" : ocrModel.trim();
-    const cleanTranslate = translateModel.trim();
-    const cleanAsk = askModel.trim();
+    const cleanModel =
+      props.command === "ocr" && selectedModel === NONE_OCR_VALUE ? "" : selectedModel.trim();
 
-    if (props.highlightField === "ocr" && !cleanOcr) {
-      await showToast({ style: Toast.Style.Failure, title: "请选择用于视觉 OCR 的模型" });
+    if (props.command === "ocr") {
+      if (props.requireModel && !cleanModel) {
+        await showToast({ style: Toast.Style.Failure, title: "请选择或填写用于视觉 OCR 的模型" });
+        return;
+      }
+    } else if (!cleanModel) {
+      await showToast({ style: Toast.Style.Failure, title: `请为${meta.fieldTitle}选择或填写模型名称` });
       return;
     }
-    if (!cleanTranslate || !cleanAsk) {
-      await showToast({ style: Toast.Style.Failure, title: "请为翻译和问答选择模型" });
-      return;
-    }
 
-    const nextConfig: SavedModelConfig = {
-      ocrModel: cleanOcr,
-      translateModel: cleanTranslate,
-      askModel: cleanAsk,
-    };
-
-    await saveModelConfig(nextConfig);
-    await showToast({ style: Toast.Style.Success, title: "已保存三个命令的模型配置" });
-    props.onSaved(nextConfig);
-  };
-
-  const renderDropdownOptions = (currentVal: string) => {
-    const existsInList = models.some((m) => m.name === currentVal);
-    return (
-      <>
-        {currentVal && currentVal !== NONE_OCR_VALUE && !existsInList && (
-          <Form.Dropdown.Item value={currentVal} title={`${currentVal} (当前已保存)`} />
-        )}
-        {models.map((m) => (
-          <Form.Dropdown.Item key={m.name} value={m.name} title={m.label} />
-        ))}
-      </>
+    const updated = await saveCommandModel(
+      props.initialConfig,
+      props.command,
+      activeProvider.endpoint,
+      cleanModel
     );
+
+    await showToast({
+      style: Toast.Style.Success,
+      title: cleanModel ? `已保存${meta.fieldTitle}: ${cleanModel}` : "已保存配置",
+    });
+    props.onSaved(updated);
   };
+
+  const existsInList = models.some((m) => m.name === selectedModel);
+  const endpointSourceTag = activeProvider.isCustomEndpoint ? "当前命令独立 Endpoint" : "全局默认 Endpoint";
+  const keySourceTag = activeProvider.isCustomApiKey
+    ? " · 独立 API Key"
+    : activeProvider.apiKey
+      ? " · 全局 API Key"
+      : "";
+
+  const statusLine = fetchError
+    ? `⚠️ 无法从 ${activeProvider.endpoint} 获取模型列表 (${fetchError})，可直接手动输入模型名，或修改当前命令独立 Endpoint`
+    : models.length > 0
+      ? `已自动检测到 ${models.length} 个可用模型`
+      : "未检测到模型列表，可直接手动输入模型名";
 
   return (
     <Form
       isLoading={isLoading}
-      navigationTitle="配置本地模型 (OCR / 翻译 / 问答)"
+      navigationTitle={meta.navTitle}
       actions={
         <ActionPanel>
           <Action.SubmitForm title="保存模型配置" icon={Icon.CheckCircle} onSubmit={handleSubmit} />
           <Action
-            title="重新扫描本地已安装模型"
+            title="配置当前命令独立 Endpoint / API Key"
+            icon={Icon.Network}
+            shortcut={crossShortcut("e", ["shift"])}
+            onAction={openCommandPreferences}
+          />
+          <Action
+            title="重新扫描服务端可用模型"
             icon={Icon.ArrowClockwise}
             shortcut={crossShortcut("r")}
             onAction={reloadModels}
@@ -132,7 +194,7 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
             />
           )}
           <Action
-            title="修改 Endpoint 地址"
+            title="打开全局默认偏好设置"
             icon={Icon.Gear}
             onAction={openExtensionPreferences}
           />
@@ -140,76 +202,39 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
       }
     >
       <Form.Description
-        title="服务端点"
-        text={
-          fetchError
-            ? `⚠️ 无法从 ${props.endpoint} 获取模型列表 (${fetchError})，请确认 Ollama 已启动并已执行 ollama pull`
-            : models.length > 0
-              ? `${props.endpoint} · 已自动检测到 ${models.length} 个本地模型`
-              : `${props.endpoint} · 暂未检测到已下载模型，请先执行 ollama pull 下载模型`
-        }
+        title="生效服务端"
+        text={`${activeProvider.endpoint}（${endpointSourceTag}${keySourceTag}）\n${statusLine}`}
       />
 
       {!manualMode && models.length > 0 ? (
-        <>
-          <Form.Dropdown
-            id="ocrModel"
-            title="OCR 模型"
-            info="用于视觉大模型 OCR 识别；若只用系统原生离线 OCR 可选“暂不配置”"
-            value={ocrModel}
-            onChange={setOcrModel}
-            autoFocus={props.highlightField === "ocr"}
-          >
+        <Form.Dropdown
+          id="modelSelect"
+          title={meta.fieldTitle}
+          info={meta.infoText}
+          value={selectedModel}
+          onChange={setSelectedModel}
+          autoFocus
+        >
+          {props.command === "ocr" && (
             <Form.Dropdown.Item value={NONE_OCR_VALUE} title="暂不配置（仅使用系统原生离线 OCR）" />
-            {renderDropdownOptions(ocrModel)}
-          </Form.Dropdown>
-
-          <Form.Dropdown
-            id="translateModel"
-            title="翻译模型"
-            info="专用于 t ${text} 翻译命令"
-            value={translateModel}
-            onChange={setTranslateModel}
-            autoFocus={props.highlightField === "translate"}
-          >
-            {renderDropdownOptions(translateModel)}
-          </Form.Dropdown>
-
-          <Form.Dropdown
-            id="askModel"
-            title="问答模型"
-            info="专用于 q ${text} 对话问答命令"
-            value={askModel}
-            onChange={setAskModel}
-            autoFocus={props.highlightField === "ask" || !props.highlightField}
-          >
-            {renderDropdownOptions(askModel)}
-          </Form.Dropdown>
-        </>
+          )}
+          {selectedModel && selectedModel !== NONE_OCR_VALUE && !existsInList && (
+            <Form.Dropdown.Item value={selectedModel} title={`${selectedModel} (当前已保存)`} />
+          )}
+          {models.map((m) => (
+            <Form.Dropdown.Item key={m.name} value={m.name} title={m.label} />
+          ))}
+        </Form.Dropdown>
       ) : (
-        <>
-          <Form.TextField
-            id="ocrModelManual"
-            title="OCR 模型 (可选)"
-            placeholder="例如 qwen2.5vl:7b"
-            value={ocrModel === NONE_OCR_VALUE ? "" : ocrModel}
-            onChange={(v) => setOcrModel(v || NONE_OCR_VALUE)}
-          />
-          <Form.TextField
-            id="translateModelManual"
-            title="翻译模型"
-            placeholder="例如 qwen2.5:7b"
-            value={translateModel}
-            onChange={setTranslateModel}
-          />
-          <Form.TextField
-            id="askModelManual"
-            title="问答模型"
-            placeholder="例如 qwen3:8b"
-            value={askModel}
-            onChange={setAskModel}
-          />
-        </>
+        <Form.TextField
+          id="modelManual"
+          title={props.command === "ocr" && !props.requireModel ? `${meta.fieldTitle} (可选)` : meta.fieldTitle}
+          placeholder={meta.placeholder}
+          info={meta.infoText}
+          value={selectedModel === NONE_OCR_VALUE ? "" : selectedModel}
+          onChange={(v) => setSelectedModel(props.command === "ocr" ? v || NONE_OCR_VALUE : v)}
+          autoFocus
+        />
       )}
     </Form>
   );

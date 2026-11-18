@@ -125,12 +125,12 @@ async function streamOllamaChat(url: string, opts: LlmRequestOptions): Promise<S
     if (!errText.toLowerCase().includes("model") && !errText.toLowerCase().includes("ollama")) {
       return "FALLBACK_OPENAI";
     }
-    throw new Error(parseApiError(res.status, errText, opts.model));
+    throw new Error(parseApiError(res.status, errText, opts.model, true));
   }
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(parseApiError(res.status, errText, opts.model));
+    throw new Error(parseApiError(res.status, errText, opts.model, true));
   }
 
   if (!res.body) {
@@ -225,7 +225,7 @@ async function streamOpenAiChat(url: string, opts: LlmRequestOptions): Promise<S
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(parseApiError(res.status, errText, opts.model));
+    throw new Error(parseApiError(res.status, errText, opts.model, false));
   }
 
   if (!res.body) {
@@ -281,12 +281,16 @@ async function streamOpenAiChat(url: string, opts: LlmRequestOptions): Promise<S
   return finalResult;
 }
 
-function parseApiError(status: number, bodyText: string, model: string): string {
+export function isOllamaNativeEndpoint(rawEndpoint: string): boolean {
+  return resolveEndpoint(rawEndpoint).mode === "ollama";
+}
+
+function parseApiError(status: number, bodyText: string, model: string, isOllama: boolean): string {
   try {
     const json = JSON.parse(bodyText);
     const msg = json?.error?.message || json?.error || json?.message;
     if (typeof msg === "string" && msg.trim()) {
-      if (msg.toLowerCase().includes("not found") && msg.toLowerCase().includes("model")) {
+      if (isOllama && msg.toLowerCase().includes("not found") && msg.toLowerCase().includes("model")) {
         return `未找到模型 "${model}"，请确认已执行 ollama pull ${model}（原始信息: ${msg}）`;
       }
       return `请求失败 (${status}): ${msg}`;
@@ -299,7 +303,7 @@ function parseApiError(status: number, bodyText: string, model: string): string 
 
 export async function streamChat(opts: LlmRequestOptions): Promise<StreamProgress> {
   if (!opts.model || !opts.model.trim()) {
-    throw new Error("未配置对应命令的模型名称，请在插件偏好设置中填写");
+    throw new Error("未配置对应命令的模型名称，请先在模型配置面板中选择或填写");
   }
 
   const resolved = resolveEndpoint(opts.endpoint);
@@ -321,7 +325,11 @@ export async function streamChat(opts: LlmRequestOptions): Promise<StreamProgres
     }
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("fetch failed") || msg.includes("ECONNREFUSED")) {
-      throw new Error(`无法连接到 ${opts.endpoint}，请确认本地 Ollama 服务正在运行`);
+      const serviceHint =
+        resolved.mode === "ollama"
+          ? "请确认本地 Ollama 服务正在运行"
+          : "请确认对应模型/API 服务已启动且地址正确";
+      throw new Error(`无法连接到 ${opts.endpoint}，${serviceHint}`);
     }
     throw err;
   }

@@ -2,15 +2,96 @@ import { LocalStorage } from "@raycast/api";
 
 const MODEL_CONFIG_STORAGE_KEY = "lite-ollama-independent-models-v1";
 
+export type CommandKind = "ocr" | "translate" | "ask";
+
+export interface CommandModelMap {
+  ocrModel?: string;
+  translateModel?: string;
+  askModel?: string;
+}
+
 export interface SavedModelConfig {
   ocrModel: string;
   translateModel: string;
   askModel: string;
+  /** Stores per-endpoint model selections so each command's independent Provider keeps its own model */
+  byEndpoint?: Record<string, CommandModelMap>;
 }
 
 export interface InstalledModelInfo {
   name: string;
   label: string;
+}
+
+export interface ResolvedProviderConfig {
+  endpoint: string;
+  apiKey?: string;
+  isCustomEndpoint: boolean;
+  isCustomApiKey: boolean;
+  globalEndpoint: string;
+}
+
+const COMMAND_FIELD_MAP: Record<CommandKind, keyof CommandModelMap> = {
+  ocr: "ocrModel",
+  translate: "translateModel",
+  ask: "askModel",
+};
+
+export function normalizeEndpointKey(rawEndpoint?: string): string {
+  return (rawEndpoint || "http://localhost:11434").trim().replace(/\/+$/, "") || "http://localhost:11434";
+}
+
+function hasSameOrigin(urlA: string, urlB: string): boolean {
+  try {
+    return new URL(urlA).origin.toLowerCase() === new URL(urlB).origin.toLowerCase();
+  } catch {
+    return normalizeEndpointKey(urlA) === normalizeEndpointKey(urlB);
+  }
+}
+
+export function formatEndpointHost(rawEndpoint: string): string {
+  try {
+    return new URL(rawEndpoint).host;
+  } catch {
+    return rawEndpoint;
+  }
+}
+
+/**
+ * Resolves the effective Provider (`endpoint` + `apiKey`) for a specific command,
+ * falling back cleanly to the global extension preferences when command overrides are empty.
+ */
+export function resolveCommandProvider(prefs: {
+  endpoint: string;
+  apiKey?: string;
+  customEndpoint?: string;
+  customApiKey?: string;
+}): ResolvedProviderConfig {
+  const globalEndpoint = normalizeEndpointKey(prefs.endpoint);
+  const cleanedCustomEndpoint = (prefs.customEndpoint || "").trim().replace(/\/+$/, "");
+  const endpoint = cleanedCustomEndpoint || globalEndpoint;
+  const isCustomEndpoint = Boolean(cleanedCustomEndpoint && cleanedCustomEndpoint !== globalEndpoint);
+
+  const cleanedCustomKey = (prefs.customApiKey || "").trim();
+  const cleanedGlobalKey = (prefs.apiKey || "").trim();
+
+  let apiKey: string | undefined;
+  let isCustomApiKey = false;
+
+  if (cleanedCustomKey) {
+    apiKey = cleanedCustomKey;
+    isCustomApiKey = true;
+  } else if (!cleanedCustomEndpoint || hasSameOrigin(cleanedCustomEndpoint, globalEndpoint)) {
+    apiKey = cleanedGlobalKey || undefined;
+  }
+
+  return {
+    endpoint,
+    apiKey,
+    isCustomEndpoint,
+    isCustomApiKey,
+    globalEndpoint,
+  };
 }
 
 function formatBytes(bytes?: number): string {
@@ -25,7 +106,7 @@ function resolveModelsEndpoints(rawEndpoint: string): {
   ollamaTagsUrl?: string;
   openAiModelsUrl: string;
 } {
-  const cleaned = (rawEndpoint || "http://localhost:11434").trim().replace(/\/+$/, "");
+  const cleaned = normalizeEndpointKey(rawEndpoint);
 
   if (cleaned.endsWith("/chat/completions")) {
     const base = cleaned.slice(0, -"/chat/completions".length);
@@ -44,8 +125,8 @@ function resolveModelsEndpoints(rawEndpoint: string): {
 }
 
 /**
- * Automatically fetches locally installed models from Ollama (`/api/tags`)
- * or an OpenAI-compatible `/v1/models` endpoint.
+ * Automatically fetches available models from Ollama (`/api/tags`)
+ * or an OpenAI-compatible `/v1/models` endpoint (such as LiteLLM or acp2api).
  */
 export async function fetchInstalledModels(
   endpoint: string,
@@ -58,7 +139,7 @@ export async function fetchInstalledModels(
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4000);
+  const timer = setTimeout(() => controller.abort(), 6000);
 
   try {
     if (ollamaTagsUrl) {
@@ -96,16 +177,22 @@ export async function fetchInstalledModels(
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
     }
-    const data = (await res.json()) as { data?: Array<{ id?: string }> };
-    if (Array.isArray(data.data)) {
-      return data.data
-        .filter((m) => Boolean(m.id))
-        .map((m) => ({
-          name: String(m.id),
-          label: String(m.id),
-        }));
-    }
-    return [];
+    const rawJson = (await res.json()) as
+      | { data?: Array<{ id?: string; name?: string }> }
+      | Array<{ id?: string; name?: string }>;
+    const items = Array.isArray(rawJson)
+      ? rawJson
+      : Array.isArray(rawJson?.data)
+        ? rawJson.data
+        : [];
+
+    return items
+      .map((m) => String(m.id || m.name || "").trim())
+      .filter(Boolean)
+      .map((id) => ({
+        name: id,
+        label: id,
+      }));
   } finally {
     clearTimeout(timer);
   }
@@ -122,6 +209,8 @@ export async function loadModelConfig(): Promise<SavedModelConfig> {
       ocrModel: (parsed.ocrModel || "").trim(),
       translateModel: (parsed.translateModel || "").trim(),
       askModel: (parsed.askModel || "").trim(),
+      byEndpoint:
+        parsed.byEndpoint && typeof parsed.byEndpoint === "object" ? parsed.byEndpoint : undefined,
     };
   } catch {
     return { ocrModel: "", translateModel: "", askModel: "" };
@@ -135,8 +224,65 @@ export async function saveModelConfig(config: SavedModelConfig): Promise<void> {
       ocrModel: config.ocrModel.trim(),
       translateModel: config.translateModel.trim(),
       askModel: config.askModel.trim(),
+      ...(config.byEndpoint ? { byEndpoint: config.byEndpoint } : {}),
     })
   );
+}
+
+export function getCommandModel(
+  config: SavedModelConfig | null,
+  command: CommandKind,
+  provider: ResolvedProviderConfig
+): string {
+  if (!config) return "";
+  const field = COMMAND_FIELD_MAP[command];
+  const key = normalizeEndpointKey(provider.endpoint);
+  const scoped = config.byEndpoint?.[key]?.[field];
+  if (scoped !== undefined) {
+    return scoped.trim();
+  }
+
+  // Backwards compatibility for existing configs saved before per-endpoint bindings
+  if (!provider.isCustomEndpoint) {
+    const hasAnyBindingForField = Object.values(config.byEndpoint || {}).some(
+      (entry) => entry?.[field] !== undefined
+    );
+    if (!hasAnyBindingForField) {
+      return (config[field] || "").trim();
+    }
+  }
+
+  return "";
+}
+
+export async function saveCommandModel(
+  current: SavedModelConfig,
+  command: CommandKind,
+  endpoint: string,
+  model: string
+): Promise<SavedModelConfig> {
+  const field = COMMAND_FIELD_MAP[command];
+  const key = normalizeEndpointKey(endpoint);
+  const cleanModel = model.trim();
+
+  const nextByEndpoint: Record<string, CommandModelMap> = {
+    ...(current.byEndpoint || {}),
+    [key]: {
+      ...(current.byEndpoint?.[key] || {}),
+      [field]: cleanModel,
+    },
+  };
+
+  const nextConfig: SavedModelConfig = {
+    ocrModel: current.ocrModel || "",
+    translateModel: current.translateModel || "",
+    askModel: current.askModel || "",
+    [field]: cleanModel,
+    byEndpoint: nextByEndpoint,
+  };
+
+  await saveModelConfig(nextConfig);
+  return nextConfig;
 }
 
 export function guessVisionModel(models: InstalledModelInfo[]): string {

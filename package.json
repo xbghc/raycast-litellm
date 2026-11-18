@@ -19,8 +19,8 @@
       "name": "endpoint",
       "type": "textfield",
       "required": true,
-      "title": "Endpoint",
-      "description": "本地 Ollama 地址（如 http://localhost:11434）；OCR / 翻译 / 问答三个独立模型会自动从该地址获取已安装列表供下拉选择",
+      "title": "默认 Endpoint",
+      "description": "全局默认模型服务地址（如本地 Ollama http://localhost:11434）；各命令若未单独填写独立 Endpoint，则自动使用此处地址",
       "default": "http://localhost:11434",
       "placeholder": "http://localhost:11434"
     },
@@ -65,6 +65,14 @@
         {
           "title": "日本語",
           "value": "ja"
+        },
+        {
+          "title": "한국어",
+          "value": "ko"
+        },
+        {
+          "title": "Français",
+          "value": "fr"
         }
       ]
     },
@@ -72,8 +80,8 @@
       "name": "apiKey",
       "type": "password",
       "required": false,
-      "title": "API Key (可选)",
-      "description": "本地 Ollama 无需填写；接入 LiteLLM 或远程兼容网关时可按需配置",
+      "title": "默认 API Key (可选)",
+      "description": "全局默认 API Key；本地 Ollama 无需填写，接入远程网关时可按需配置",
       "placeholder": "sk-..."
     },
     {
@@ -99,6 +107,24 @@
         "剪贴板",
         "识图",
         "文字识别"
+      ],
+      "preferences": [
+        {
+          "name": "customEndpoint",
+          "type": "textfield",
+          "required": false,
+          "title": "OCR 独立 Endpoint (可选)",
+          "description": "仅用于视觉大模型 OCR 的服务地址；留空则使用全局默认 Endpoint",
+          "placeholder": "留空使用全局默认 Endpoint"
+        },
+        {
+          "name": "customApiKey",
+          "type": "password",
+          "required": false,
+          "title": "OCR 独立 API Key (可选)",
+          "description": "仅用于视觉大模型 OCR 的 API Key；留空且未更换跨域地址时回退使用全局默认 API Key",
+          "placeholder": "sk-..."
+        }
       ]
     },
     {
@@ -120,19 +146,38 @@
           "placeholder": "输入待翻译文本（留空读取选中文本或剪贴板）",
           "required": false
         }
+      ],
+      "preferences": [
+        {
+          "name": "customEndpoint",
+          "type": "textfield",
+          "required": false,
+          "title": "翻译独立 Endpoint (可选)",
+          "description": "仅用于翻译命令的服务地址（如本地 Ollama 或兼容 /v1 接口）；留空则使用全局默认 Endpoint",
+          "placeholder": "留空使用全局默认 Endpoint"
+        },
+        {
+          "name": "customApiKey",
+          "type": "password",
+          "required": false,
+          "title": "翻译独立 API Key (可选)",
+          "description": "仅用于翻译命令的 API Key；留空且未更换跨域地址时回退使用全局默认 API Key",
+          "placeholder": "sk-..."
+        }
       ]
     },
     {
       "name": "ask",
       "title": "Quick Ask",
       "subtitle": "Lite Ollama",
-      "description": "快速流式问答，支持一键同步会话并进入 Ollama 桌面端继续对话（建议为命令设置别名 q）",
+      "description": "快速流式问答，支持独立配置 acp2api / OpenAI 兼容服务端或进入 Ollama 桌面端继续对话（建议为命令设置别名 q）",
       "mode": "view",
       "keywords": [
         "q",
         "ask",
         "chat",
         "ollama",
+        "acp",
         "对话",
         "问答"
       ],
@@ -142,6 +187,24 @@
           "type": "text",
           "placeholder": "输入你的问题...",
           "required": false
+        }
+      ],
+      "preferences": [
+        {
+          "name": "customEndpoint",
+          "type": "textfield",
+          "required": false,
+          "title": "问答独立 Endpoint (可选)",
+          "description": "仅用于问答命令的服务地址（如 acp2api http://127.0.0.1:8787/v1）；留空则使用全局默认 Endpoint",
+          "placeholder": "留空使用全局默认 Endpoint（如 http://127.0.0.1:8787/v1）"
+        },
+        {
+          "name": "customApiKey",
+          "type": "password",
+          "required": false,
+          "title": "问答独立 API Key (可选)",
+          "description": "仅用于问答命令的 API Key；留空且未更换跨域地址时回退使用全局默认 API Key",
+          "placeholder": "sk-..."
         }
       ]
     }

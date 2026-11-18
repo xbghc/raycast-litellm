@@ -11,6 +11,7 @@ import {
   confirmAlert,
   getPreferenceValues,
   launchCommand,
+  openCommandPreferences,
   openExtensionPreferences,
   showHUD,
   showToast,
@@ -26,13 +27,28 @@ import {
   syncClipboardImages,
   toFileMarkdownUrl,
 } from "./lib/clipboard-images";
-import { SavedModelConfig, loadModelConfig } from "./lib/model-store";
+import {
+  SavedModelConfig,
+  formatEndpointHost,
+  getCommandModel,
+  loadModelConfig,
+  resolveCommandProvider,
+} from "./lib/model-store";
 import { runImageOcr } from "./lib/ocr-engine";
 import { ClipboardImageItem, OcrEngineType, crossShortcut } from "./lib/types";
 
 export default function OcrCommand() {
   const prefs = getPreferenceValues<Preferences.Ocr>();
   const { push, pop } = useNavigation();
+
+  const provider = useMemo(
+    () => resolveCommandProvider(prefs),
+    [prefs.apiKey, prefs.customApiKey, prefs.customEndpoint, prefs.endpoint]
+  );
+  const readFreshProvider = useCallback(
+    () => resolveCommandProvider(getPreferenceValues<Preferences.Ocr>()),
+    []
+  );
 
   const [modelConfig, setModelConfig] = useState<SavedModelConfig | null>(null);
   const [items, setItems] = useState<ClipboardImageItem[]>([]);
@@ -44,7 +60,11 @@ export default function OcrCommand() {
   const [ocrErrors, setOcrErrors] = useState<Record<string, string>>({});
   const [showImagePreview, setShowImagePreview] = useState<boolean>(true);
 
-  const visionModel = modelConfig?.ocrModel || "";
+  const visionModel = useMemo(
+    () => getCommandModel(modelConfig, "ocr", provider),
+    [modelConfig, provider]
+  );
+  const providerHost = useMemo(() => formatEndpointHost(provider.endpoint), [provider.endpoint]);
 
   const itemsRef = useRef<ClipboardImageItem[]>([]);
   itemsRef.current = items;
@@ -58,21 +78,27 @@ export default function OcrCommand() {
     if (!modelConfig) return;
     push(
       <ModelConfigForm
-        endpoint={prefs.endpoint}
-        apiKey={prefs.apiKey}
+        command="ocr"
+        provider={readFreshProvider()}
+        refreshProvider={readFreshProvider}
         initialConfig={modelConfig}
-        highlightField="ocr"
+        requireModel={engine === "llm"}
         onSaved={(updated) => {
           setModelConfig(updated);
           pop();
         }}
       />
     );
-  }, [modelConfig, pop, prefs.apiKey, prefs.endpoint, push]);
+  }, [engine, modelConfig, pop, push, readFreshProvider]);
 
   const getCacheKey = useCallback(
-    (targetEngine: OcrEngineType) => (targetEngine === "system" ? "v2:system" : `v2:llm:${visionModel}`),
-    [visionModel]
+    (targetEngine: OcrEngineType) => {
+      if (targetEngine === "system") return "v2:system";
+      return provider.endpoint === "http://localhost:11434"
+        ? `v2:llm:${visionModel}`
+        : `v2:llm:${provider.endpoint}:${visionModel}`;
+    },
+    [provider.endpoint, visionModel]
   );
 
   const refreshClipboard = useCallback(async () => {
@@ -136,9 +162,9 @@ export default function OcrCommand() {
           width: item.width,
           height: item.height,
           engine: targetEngine,
-          endpoint: prefs.endpoint,
+          endpoint: provider.endpoint,
           model: visionModel,
-          apiKey: prefs.apiKey,
+          apiKey: provider.apiKey,
           signal: controller.signal,
           onProgress: (partial) => {
             setLivePreviewText((prev) => ({ ...prev, [item.id]: partial }));
@@ -180,7 +206,7 @@ export default function OcrCommand() {
         }
       }
     },
-    [getCacheKey, prefs.apiKey, prefs.endpoint, visionModel]
+    [getCacheKey, provider.apiKey, provider.endpoint, visionModel]
   );
 
   // Automatically trigger OCR whenever selection or OCR engine changes
@@ -208,10 +234,11 @@ export default function OcrCommand() {
   if (modelConfig && engine === "llm" && !visionModel) {
     return (
       <ModelConfigForm
-        endpoint={prefs.endpoint}
-        apiKey={prefs.apiKey}
+        command="ocr"
+        provider={provider}
+        refreshProvider={readFreshProvider}
         initialConfig={modelConfig}
-        highlightField="ocr"
+        requireModel
         onSaved={setModelConfig}
       />
     );
@@ -255,6 +282,9 @@ export default function OcrCommand() {
     return { pinned, today, earlier };
   }, [items]);
 
+  const visionLabel =
+    provider.isCustomEndpoint && visionModel ? `${visionModel} @ ${providerHost}` : visionModel;
+
   const buildDetailMarkdown = (item: ClipboardImageItem): string => {
     const cacheKey = getCacheKey(engine);
     const cachedText = item.ocrCache?.[cacheKey];
@@ -264,7 +294,7 @@ export default function OcrCommand() {
 
     let bodySection = "";
     if (errText) {
-      bodySection = `> ⚠️ **OCR 识别失败**\n>\n> ${errText.replace(/\n/g, "\n> ")}\n\n*提示：可按快捷键切换系统原生 OCR / 视觉大模型 OCR，或在动作面板配置本地模型。*`;
+      bodySection = `> ⚠️ **OCR 识别失败**\n>\n> ${errText.replace(/\n/g, "\n> ")}\n\n*提示：可按快捷键切换系统原生 OCR / 视觉大模型 OCR，或在动作面板配置模型与服务端。*`;
     } else if (streamingText !== undefined && isItemLoading) {
       bodySection = streamingText || "*正在识别图片中的文字...*";
     } else if (cachedText !== undefined) {
@@ -273,7 +303,7 @@ export default function OcrCommand() {
       bodySection =
         engine === "system"
           ? "*正在调用系统原生 OCR 识别...*"
-          : `*正在调用视觉模型 \`${visionModel}\` 识别...*`;
+          : `*正在调用视觉模型 \`${visionLabel}\` 识别...*`;
     } else {
       bodySection = "*选中图片后自动显示 OCR 结果*";
     }
@@ -284,7 +314,7 @@ export default function OcrCommand() {
 
     const fileUrl = toFileMarkdownUrl(item.cachedPath);
     const metaFooter = `\`${item.width > 0 ? `${item.width}×${item.height}` : item.mimeType}\` · \`${
-      engine === "system" ? "系统原生 OCR" : visionModel
+      engine === "system" ? "系统原生 OCR" : visionLabel
     }\` · ${formatRelativeTime(item.copiedAt)}`;
 
     return `${bodySection}\n\n---\n\n![Clipboard Image](${fileUrl})\n\n${metaFooter}`;
@@ -405,10 +435,16 @@ export default function OcrCommand() {
                 onAction={() => setEngine((prev) => (prev === "system" ? "llm" : "system"))}
               />
               <Action
-                title="配置本地模型 (OCR / 翻译 / 问答)"
+                title="切换视觉 OCR 模型"
                 icon={Icon.Cog}
                 shortcut={crossShortcut("m", ["shift"])}
                 onAction={openModelSettings}
+              />
+              <Action
+                title="配置 OCR 独立 Endpoint / API Key"
+                icon={Icon.Network}
+                shortcut={crossShortcut("e", ["shift"])}
+                onAction={openCommandPreferences}
               />
               <Action
                 title={showImagePreview ? "隐藏右侧原图预览" : "显示右侧原图预览"}
@@ -445,7 +481,11 @@ export default function OcrCommand() {
                 shortcut={Keyboard.Shortcut.Common.RemoveAll}
                 onAction={clearUnpinned}
               />
-              <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
+              <Action
+                title="打开全局默认偏好设置"
+                icon={Icon.Gear}
+                onAction={openExtensionPreferences}
+              />
             </ActionPanel.Section>
           </ActionPanel>
         }
@@ -468,7 +508,7 @@ export default function OcrCommand() {
         >
           <List.Dropdown.Item title="系统原生离线 OCR" value="system" icon={Icon.ComputerChip} />
           <List.Dropdown.Item
-            title={visionModel ? `视觉大模型 (${visionModel})` : "视觉大模型 (点击选择本地模型)"}
+            title={visionLabel ? `视觉大模型 (${visionLabel})` : "视觉大模型 (点击选择模型)"}
             value="llm"
             icon={Icon.Stars}
           />
@@ -483,8 +523,17 @@ export default function OcrCommand() {
           actions={
             <ActionPanel>
               <Action title="重新扫描剪贴板" icon={Icon.ArrowClockwise} onAction={refreshClipboard} />
-              <Action title="配置本地模型 (OCR / 翻译 / 问答)" icon={Icon.Cog} onAction={openModelSettings} />
-              <Action title="打开插件偏好设置" icon={Icon.Gear} onAction={openExtensionPreferences} />
+              <Action title="切换视觉 OCR 模型" icon={Icon.Cog} onAction={openModelSettings} />
+              <Action
+                title="配置 OCR 独立 Endpoint / API Key"
+                icon={Icon.Network}
+                onAction={openCommandPreferences}
+              />
+              <Action
+                title="打开全局默认偏好设置"
+                icon={Icon.Gear}
+                onAction={openExtensionPreferences}
+              />
             </ActionPanel>
           }
         />
